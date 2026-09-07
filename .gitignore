@@ -1,0 +1,37 @@
+# Gradle and Android build output
+.gradle/
+**/build/
+.kotlin/
+.externalNativeBuild/
+.cxx/
+captures/
+output.json
+
+# Local machine configuration
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+
+# Signing and service configuration
+*.jks
+*.keystore
+google-services.json
+
+# Generated or local artifacts
+*.apk
+*.aab
+*.hprof
+*.zip
+Gear360App-Android16-logcat.txt
+logs/
+
+# Local reverse-engineering material. Keep only clean-room findings in docs/.
+reverse-engineering/
+
+# Obsolete project copy retained locally during migration.
+Gear360App-master/

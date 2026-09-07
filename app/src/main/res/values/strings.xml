@@ -1,0 +1,174 @@
+<resources>
+    <string name="app_name">Gear360App</string>
+
+    <!-- HomeActivity -->
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="btn_camera">Camera</string>
+    <string name="btn_camera_description">Take 360° pictures and videos.</string>
+    <string name="btn_remote_control">Remote control</string>
+    <string name="btn_remote_control_description">Control your Gear 360 from a distance</string>
+    <string name="btn_status">Camera Status</string>
+    <string name="btn_status_description">View the status of your Gear360</string>
+    <string name="btn_hardware">Hardware info</string>
+    <string name="btn_hardware_description">View hardware information of your Gear 360</string>
+    <string name="btn_messages">Messages</string>
+    <string name="btn_messages_description">View Bluetooth messages between your phone and the camera</string>
+    <string name="btn_bluetooth_diagnostics">Bluetooth diagnostics</string>
+    <string name="btn_bluetooth_diagnostics_description">Trace Samsung Accessory, SAP socket and channel 204 handshake</string>
+    <string name="btn_test">Test</string>
+    <string name="btn_test_description">Testing area. Please mind the gap</string>
+
+    <!-- RemoteControlActivity -->
+    <string name="mode">Mode</string>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_video">Video</string>
+    <string name="mode_looping_video">Looping Video</string>
+    <string name="mode_time_lapse">Time Lapse</string>
+
+    <string name="btn_take_photo">Take Photo</string>
+    <string name="btn_capture_video">Capture Video</string>
+    <string name="btn_capture_looping_video">Capture Looping Video</string>
+    <string name="btn_capture_time_lapse">Capture Time Lapse</string>
+    <string name="btn_capture_stop">Stop</string>
+
+    <!-- SimpleCameraActivity -->
+    <string name="simple_camera_title">Simple camera</string>
+    <string name="simple_camera_status_waiting">Put the Gear 360 in Connect to Android mode, then connect.</string>
+    <string name="simple_camera_status_connecting">Connecting to Gear 360...</string>
+    <string name="simple_camera_status_connected">Camera connected</string>
+    <string name="simple_camera_status_bt_connected">Bluetooth connected. Reading camera state...</string>
+    <string name="simple_camera_status_wifi_connecting">Connecting to Gear 360 Wi-Fi...</string>
+    <string name="simple_camera_status_wifi_connected">Gear 360 Wi-Fi connected</string>
+    <string name="simple_camera_status_disconnected">Camera disconnected</string>
+    <string name="simple_camera_status_busy">Camera command in progress...</string>
+    <string name="simple_camera_status_recording">Recording video</string>
+    <string name="simple_camera_status_error">Camera connection error. Check native Bluetooth/SAP diagnostics.</string>
+    <string name="simple_camera_status_missing_device">No camera selected</string>
+    <string name="simple_camera_bluetooth_placeholder">○ Bluetooth</string>
+    <string name="simple_camera_wifi_placeholder">○ Wi-Fi</string>
+    <string name="simple_camera_bluetooth_state">%1$s Bluetooth</string>
+    <string name="simple_camera_wifi_state">%1$s Wi-Fi</string>
+    <string name="simple_camera_battery_placeholder">Battery: ---</string>
+    <string name="simple_camera_mode_placeholder">Mode: ---</string>
+    <string name="simple_camera_battery_state">Battery: %1$s</string>
+    <string name="simple_camera_mode_state">Mode: %1$s</string>
+    <string name="simple_camera_recording">REC ●</string>
+    <string name="pair_bluetooth">Pair Bluetooth</string>
+    <string name="bluetooth_pairing">Bluetooth pairing started</string>
+    <string name="bluetooth_paired">Bluetooth paired</string>
+    <string name="bluetooth_pairing_failed">Bluetooth pairing failed</string>
+    <string name="bluetooth_permission_missing">Bluetooth permission is missing</string>
+    <string name="connect_camera">Connect Gear 360</string>
+    <string name="connect_camera_wifi">Connect Wi-Fi</string>
+    <string name="camera_wifi_not_ready">Wi-Fi info is not available yet</string>
+    <string name="wifi_disabled_for_diagnostics">Wi-Fi/gallery disabled during Bluetooth diagnostics</string>
+    <string name="start_video">Start video</string>
+    <string name="stop_video">Stop video</string>
+    <string name="choose_folder">Choose folder</string>
+    <string name="auto_transfer">Auto transfer after capture</string>
+    <string name="import_now">Import now</string>
+    <string name="gallery">Gallery</string>
+    <string name="transfer_folder_label">Transfer folder</string>
+    <string name="no_transfer_folder">No folder selected</string>
+    <string name="folder_selected">Folder selected</string>
+    <string name="camera_command_sent">Command sent</string>
+    <string name="camera_not_connected">Camera is not connected</string>
+    <string name="media_import_started">Looking for new media...</string>
+    <string name="media_import_done">Imported %1$d file(s), skipped %2$d.</string>
+    <string name="media_import_no_files">No downloadable media found. Connect to the camera Wi-Fi and try again.</string>
+    <string name="media_import_no_folder">Choose a transfer folder first.</string>
+    <string name="media_import_failed">Media import failed: %1$s</string>
+
+    <string name="looping_video_time">Looping Video Record Time</string>
+    <string name="looping_video_5min">5min</string>
+    <string name="looping_video_30min">30min</string>
+    <string name="looping_video_60min">60min</string>
+    <string name="looping_video_max">Max</string>
+
+    <string name="camera_settings">Camera Settings</string>
+    <string name="led_indicators">LED Indicators</string>
+
+    <string name="timer">Timer</string>
+    <string name="timer_off">Off</string>
+    <string name="timer_2s">2sec</string>
+    <string name="timer_5s">5sec</string>
+    <string name="timer_10s">10sec</string>
+
+    <string name="beep_volume">Beep volume</string>
+    <string name="beep_high">High</string>
+    <string name="beep_mid">Mid</string>
+    <string name="beep_low">Low</string>
+    <string name="beep_off">Off</string>
+
+    <string name="auto_power_off">Auto power off</string>
+    <string name="auto_power_off_1min">1min</string>
+    <string name="auto_power_off_3min">3min</string>
+    <string name="auto_power_off_5min">5min</string>
+    <string name="auto_power_off_30min">30min</string>
+
+    <!-- HardwareInfoActivity -->
+    <string name="hardware_model_name">Model name</string>
+    <string name="hardware_model_version">Firmware version</string>
+    <string name="hardware_channel">Wifi Channel</string>
+    <string name="hardware_wifi_direct_mac">Wifi Direct mac address</string>
+    <string name="hardware_ap_ssid">AP SSID</string>
+    <string name="hardware_ap_password">AP password</string>
+    <string name="hardware_board_revision">Board revision</string>
+    <string name="hardware_serial_number">Serial number</string>
+    <string name="hardware_unique_number">Unique number</string>
+    <string name="hardware_wifi_mac">Wifi mac address</string>
+    <string name="hardware_bt_mac">Bluetooth mac address</string>
+    <string name="hardware_fw_type">Firmware type</string>
+    <string name="hardware_fw_type_user">User</string>
+    <string name="hardware_fw_type_retail">Retail</string>
+
+    <!-- StatusActivity -->
+    <string name="status_battery">Battery</string>
+    <string name="status_battery_state">Battery State</string>
+    <string name="status_total_memory">Total Storage</string>
+    <string name="status_used_memory">Used Storage</string>
+    <string name="status_free_memory">Free Storage</string>
+    <string name="status_record_state">Record State</string>
+    <string name="status_capture_state">Capture State</string>
+    <string name="status_auto_poweroff">Auto Poweroff</string>
+    <string name="status_recordable_time">Recordable Time</string>
+    <string name="status_capturable_count">Capturable Count</string>
+
+    <!-- Messages Activity -->
+    <string name="sender_phone">Phone</string>
+    <string name="sender_camera">Camera</string>
+
+    <!-- MISC -->
+    <string name="samsung_accessory_missing_title">Samsung Accessory Service required</string>
+    <string name="samsung_accessory_missing_message">Install Samsung Accessory Service to connect to the Gear 360 on this phone.</string>
+    <string name="camera_selected_connecting">Camera selected. Connecting...</string>
+    <string name="gear_service_starting">Starting Gear 360 service...</string>
+    <string name="connection_timeout_samsung_accessory">Connection failed before Gear 360 READY. Check RFCOMM/SAP diagnostics.</string>
+    <string name="install">Install</string>
+    <string name="continue_anyway">Continue anyway</string>
+    <string name="percentage">%d%%</string>
+    <string name="no_value">---</string>
+
+    <!-- BluetoothDiagnosticsActivity -->
+    <string name="diag_bluetooth_device">Bluetooth device</string>
+    <string name="diag_bluetooth_bond">Bluetooth bond</string>
+    <string name="diag_control_backend">Control backend</string>
+    <string name="diag_samsung_framework">Samsung framework</string>
+    <string name="diag_samsung_framework_version">Samsung framework version</string>
+    <string name="diag_physical_transport">Physical transport</string>
+    <string name="diag_accessory_transport">Accessory transport</string>
+    <string name="diag_sap_peer">SAP peer</string>
+    <string name="diag_sap_socket">SAP socket</string>
+    <string name="diag_logical_channel_204">Logical channel 204</string>
+    <string name="diag_rx_204_count">RX 204 count</string>
+    <string name="diag_channel_204_rx">Channel 204 RX</string>
+    <string name="diag_last_rx">Last RX</string>
+    <string name="diag_protocol">Protocol</string>
+    <string name="diag_wifi">Wi-Fi</string>
+    <string name="diag_camera">Camera</string>
+    <string name="diag_expected_mode">Camera connection mode expected</string>
+    <string name="diag_expected_mode_value">GEAR 360 CONNECT TO ANDROID / PHONE</string>
+    <string name="diag_native_bluetooth">Native Bluetooth diagnostics</string>
+    <string name="diag_last_error">Last error</string>
+</resources>

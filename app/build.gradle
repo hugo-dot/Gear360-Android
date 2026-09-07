@@ -1,0 +1,88 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'com.google.devtools.ksp' version '2.1.0-1.0.29'
+}
+
+android {
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "io.github.teccheck.gear360app"
+        minSdkVersion 21
+        targetSdkVersion 36
+        versionCode 2
+        versionName "0.1"
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        targetCompatibility JavaVersion.VERSION_21
+        sourceCompatibility JavaVersion.VERSION_21
+    }
+    namespace 'io.github.teccheck.gear360app'
+}
+
+tasks.register('checkSamsungAccessorySdk') {
+    doLast {
+        def sdkDir = file('sdk')
+        def missing = []
+
+        if (fileTree(dir: sdkDir, include: ['sdk-v*.jar']).isEmpty()) {
+            missing << 'sdk-v*.jar'
+        }
+        if (fileTree(dir: sdkDir, include: ['accessory-v*.jar']).isEmpty()) {
+            missing << 'accessory-v*.jar'
+        }
+        if (!file('sdk/Addon.jar').exists()) {
+            missing << 'Addon.jar'
+        }
+
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                "Missing Samsung Accessory SDK JAR(s): ${missing.join(', ')}. " +
+                    "Place the Samsung Accessory SDK JARs in app/sdk before building."
+            )
+        }
+    }
+}
+
+tasks.named('preBuild') {
+    dependsOn tasks.named('checkSamsungAccessorySdk')
+}
+
+dependencies {
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.2.1'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
+    implementation 'com.google.android.exoplayer:exoplayer-ui:2.19.1'
+
+    implementation 'com.squareup.moshi:moshi-kotlin:1.15.2'
+    implementation 'androidx.activity:activity:1.10.1'
+    ksp 'com.squareup.moshi:moshi-kotlin-codegen:1.15.2'
+
+    implementation fileTree(dir: 'sdk', include: ['*.jar'])
+
+    implementation "androidx.core:core-ktx:1.15.0"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+}
+repositories {
+    mavenCentral()
+}
