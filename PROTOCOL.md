@@ -41,6 +41,29 @@ Le code natif utilise maintenant:
 
 Le channel `204` n'est pas un port RFCOMM. C'est un channel logique SAP.
 
+## Flux Legacy confirme dans l'APK officiel
+
+Le DEX de Gear 360 Manager 1.5.00.1 confirme les deux points suivants:
+
+```text
+BTMSAService.connect(address)
+  -> SamAccessoryManager.connect(address, TRANSPORT_BT, ASSISTMODE_DEFAULT)
+
+BTMProviderService.onFindPeerAgentsResponse(PEER_AGENT_FOUND)
+  -> onPeerFound(peers)
+  -> establishConnection(peers)
+  -> requestServiceConnection(peer)
+```
+
+Le meme Provider implemente aussi le chemin entrant:
+
+```text
+onServiceConnectionRequested(peer)
+  -> acceptServiceConnectionRequest(peer)
+```
+
+Notre backend Legacy supporte donc la demande sortante originale et l'acceptation entrante, avec un verrou anti-doublon et un timeout explicite. Le fait que le profil ait le role `provider` ne signifie pas que le telephone doit seulement attendre une connexion entrante.
+
 ## Framing transport
 
 Format implemente:
@@ -98,9 +121,9 @@ Pour le profil Gear 360:
 /system/DI_360_2D
 ```
 
-Samsung encode ce profile id dans les trames legacy et service connection comme un champ fixe de 17 octets. Il n'est pas termine par `;`.
+Samsung encode ce profile id dans les trames CAPEX et service connection comme une chaine UTF-8 terminee par `;`.
 
-Les profile ids dont le premier octet vaut `=` suivent l'autre format observe: chaine terminee par `;`, jusqu'a 64 octets.
+Les profile ids dont le premier octet vaut `=` suivent le format fixe observe de 17 octets.
 
 ## CAPEX
 
@@ -121,7 +144,7 @@ aspVersion = 0x0201
 role = provider
 ```
 
-Le CAPEX moderne est detecte mais pas encore repondu. S'il apparait au test physique, la build signale une erreur explicite au lieu de simuler READY.
+La requete CAPEX Sync moderne est emise sous la forme `01 03 count profiles`, sans checksum, sur la session reservee 1020 pour un accessoire ancien. Une requete CAPEX moderne recue est detectee mais sa reponse n'est pas encore produite sans trace physique de la camera.
 
 ## Service profile Gear 360
 
@@ -137,7 +160,7 @@ channels: 204, 222, 230
 
 La requete de service connection est parsee depuis la session reservee 1023.
 
-Une fois acceptee, la reponse conserve le profile id fixe 17 octets et chaque channel logique est mappe vers son session id negocie:
+Une fois acceptee, la reponse conserve le profile id termine par `;` et chaque channel logique est mappe vers son session id negocie:
 
 ```text
 channel 204 -> sessionId camera-provided

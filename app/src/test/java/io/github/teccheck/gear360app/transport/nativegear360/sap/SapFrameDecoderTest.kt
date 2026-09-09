@@ -62,4 +62,25 @@ class SapFrameDecoderTest {
         assertEquals(2, frames[1].sessionId)
         assertArrayEquals(secondPayload, frames[1].payload)
     }
+
+    @Test
+    fun parserRecognizesFragmentedSamsungAuthenticationDevicePacket() {
+        val securityPacket = byteArrayOf(0x00, 0x00, 0x05, 0x55, 0x66)
+        val payload = SapAccessoryAuthentication(
+            messageType = SapAccessoryAuthentication.ACCESSORY_AUTHENTICATE_REQUEST,
+            authenticationType = 0,
+            securityPacket = securityPacket
+        ).compose()
+        val wire = SapFrameEncoder().encodeDevicePacket(payload)
+        val decoder = SapFrameDecoder()
+
+        assertEquals(SapDecodeResult.NeedMoreData, decoder.append(wire.copyOfRange(0, 4)))
+        val result = decoder.append(wire.copyOfRange(4, wire.size))
+
+        assertTrue(result is SapDecodeResult.Frames)
+        val frame = (result as SapDecodeResult.Frames).frames.single()
+        assertEquals(SapFrameType.DEVICE, frame.frameType)
+        assertEquals(-1, frame.sessionId)
+        assertArrayEquals(payload, frame.payload)
+    }
 }

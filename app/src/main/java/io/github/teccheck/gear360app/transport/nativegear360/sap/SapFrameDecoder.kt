@@ -46,23 +46,36 @@ class SapFrameDecoder(
                 }
             }
 
-            val parsed = SapProtocol.parsePayload(sapPayload)
-                ?: return failAndReset(totalSize, "unsupported SAP protocol header")
+            val transportCrcMode = if (crcEnabled) {
+                SapTransportCrcMode.ENABLED
+            } else {
+                SapTransportCrcMode.DISABLED
+            }
+            val authentication = SapAccessoryAuthentication.parse(sapPayload)
+            if (authentication != null) {
+                frames += SapFrame(
+                    channel = DEVICE_CHANNEL,
+                    sessionId = DEVICE_CHANNEL,
+                    frameType = SapFrameType.DEVICE,
+                    transportCrcMode = transportCrcMode,
+                    payload = sapPayload,
+                    raw = raw
+                )
+            } else {
+                val parsed = SapProtocol.parsePayload(sapPayload)
+                    ?: return failAndReset(totalSize, "unsupported SAP protocol header")
 
-            frames += SapFrame(
-                channel = parsed.sessionId,
-                sessionId = parsed.sessionId,
-                frameType = parsed.frameType,
-                fragmentation = parsed.fragmentation,
-                sequenceNumber = parsed.sequenceNumber,
-                transportCrcMode = if (crcEnabled) {
-                    SapTransportCrcMode.ENABLED
-                } else {
-                    SapTransportCrcMode.DISABLED
-                },
-                payload = parsed.payload,
-                raw = raw
-            )
+                frames += SapFrame(
+                    channel = parsed.sessionId,
+                    sessionId = parsed.sessionId,
+                    frameType = parsed.frameType,
+                    fragmentation = parsed.fragmentation,
+                    sequenceNumber = parsed.sequenceNumber,
+                    transportCrcMode = transportCrcMode,
+                    payload = parsed.payload,
+                    raw = raw
+                )
+            }
 
             buffer = buffer.copyOfRange(totalSize, buffer.size)
         }
@@ -95,5 +108,9 @@ class SapFrameDecoder(
             sampleHex = sample,
             reason = reason
         )
+    }
+
+    private companion object {
+        const val DEVICE_CHANNEL = -1
     }
 }

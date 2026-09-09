@@ -38,4 +38,88 @@ class SapFrameEncoderTest {
         assertEquals(SapTransportCrcMode.ENABLED, frame.transportCrcMode)
         assertArrayEquals(payload, frame.payload)
     }
+
+    @Test
+    fun legacyCapexQueryMatchesSamsungWireLayout() {
+        val payload = SapCapabilityExchange.composeLegacyQuery()
+        val encoded = SapFrameEncoder().encodeData(
+            sessionId = SapProtocol.SESSION_ID_CAPEX,
+            payload = payload
+        )
+
+        assertArrayEquals(
+            byteArrayOf(
+                0x00, 0x18, 0x0f, 0xf0.toByte(),
+                0x05, 0x01, 0x05, 0xa0.toByte(),
+                0x2f, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x2f,
+                0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32, 0x44,
+                0x3b
+            ),
+            encoded
+        )
+    }
+
+    @Test
+    fun initialCapexSyncQueryMatchesSamsungWireLayout() {
+        val payload = SapCapabilityExchange.composeSyncQuery()
+        val encoded = SapFrameEncoder().encodeData(
+            sessionId = SapProtocol.SESSION_ID_CAPEX,
+            payload = payload
+        )
+
+        assertArrayEquals(
+            byteArrayOf(
+                0x00, 0x17, 0x0f, 0xf0.toByte(),
+                0x01, 0x03,
+                0x01,
+                0x2f, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x2f,
+                0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32, 0x44,
+                0x3b
+            ),
+            encoded
+        )
+    }
+
+    @Test
+    fun capexSyncResponseMatchesSamsungWireLayout() {
+        val response = SapCapabilityExchange.composeResponse(
+            SapCapabilityExchange.composeSyncQuery()
+        )
+
+        assertArrayEquals(
+            byteArrayOf(
+                0x02, 0x03, 0x00, 0x01,
+                0x00, 0x01,
+                0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32,
+                0x44, 0x41, 0x70, 0x70, 0x3b,
+                0x00, 0x01,
+                0x00, 0x01,
+                0x2f, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x2f,
+                0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32, 0x44,
+                0x3b,
+                0x02, 0x01,
+                0x01,
+                0x00, 0x0a
+            ),
+            response
+        )
+    }
+
+    @Test
+    fun authenticationDevicePacketRoundTripsWithoutSapSessionHeader() {
+        val payload = SapAccessoryAuthentication(
+            messageType = SapAccessoryAuthentication.ACCESSORY_AUTHENTICATE_RESPONSE,
+            authenticationType = 0,
+            securityPacket = byteArrayOf(0x00, 0x00, 0x05, 0x12, 0x34)
+        ).compose()
+
+        val encoded = SapFrameEncoder().encodeDevicePacket(payload)
+        val result = SapFrameDecoder().append(encoded)
+
+        assertEquals(payload.size, SapCrc.readUInt16(encoded, 0))
+        assertTrue(result is SapDecodeResult.Frames)
+        val decoded = (result as SapDecodeResult.Frames).frames.single()
+        assertEquals(SapFrameType.DEVICE, decoded.frameType)
+        assertArrayEquals(payload, decoded.payload)
+    }
 }

@@ -22,6 +22,9 @@ object Gear360TransportFactory {
                     samsungStatus.diagnosticStatus,
                     samsungStatus.version
                 )
+                // The native SAP session is still under hardware validation. When the
+                // matching Samsung framework is available it is the reference backend,
+                // including on Android 12+, with native transport kept as the fallback.
                 if (samsungStatus.installed && !samsungStatus.broken) {
                     LegacySamsungAccessoryTransport(context, listener)
                 } else {

@@ -46,8 +46,9 @@ le backend `SAMSUNG LEGACY`; le backend natif est encore expérimental.
 4. Vérifier les logs `G360-*` et `LEGACY-*` jusqu'à `config-info` puis `READY`.
 5. Tester PHOTO, VIDEO START et VIDEO STOP uniquement lorsque l'interface indique READY.
 
-Le script `diagnose-s8.bat` collecte les informations ADB utiles sans modifier ni effacer
-les données du téléphone.
+Le script `diagnose-gear360.bat` compile, installe et collecte les informations ADB utiles
+sur le premier telephone autorise, sans modifier ni effacer ses donnees. Un numero de serie
+ADB peut aussi etre passe en argument. `diagnose-s8.bat` reste disponible pour l'ancien S8.
 
 ## Documentation
 

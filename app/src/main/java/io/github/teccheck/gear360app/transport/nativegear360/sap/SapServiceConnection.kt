@@ -8,6 +8,47 @@ object SapServiceConnection {
     const val STATUS_ACCEPTED = 0
     const val STATUS_REJECTED = 1
 
+    fun composeRequest(
+        acceptorId: Int,
+        initiatorId: Int,
+        profileId: String,
+        channels: List<ServiceChannelRecord>
+    ): ByteArray {
+        require(channels.isNotEmpty()) { "a SAP service connection needs at least one channel" }
+        require(channels.size <= 0xffff) { "too many SAP service channels: ${channels.size}" }
+
+        val profileBytes = SapProfileIdCodec.encode(profileId)
+        val out = ByteArray(1 + 2 + 2 + profileBytes.size + 2 + channels.size * 8)
+        var offset = 0
+        out[offset++] = MESSAGE_TYPE_CREATION_REQUEST.toByte()
+        SapCrc.writeUInt16(acceptorId, out, offset)
+        offset += 2
+        SapCrc.writeUInt16(initiatorId, out, offset)
+        offset += 2
+        profileBytes.copyInto(out, offset)
+        offset += profileBytes.size
+        SapCrc.writeUInt16(channels.size, out, offset)
+        offset += 2
+
+        channels.forEach { channel ->
+            SapCrc.writeUInt16(channel.sessionId, out, offset)
+            offset += 2
+        }
+        channels.forEach { channel ->
+            SapCrc.writeUInt16(channel.channelId, out, offset)
+            offset += 2
+        }
+        channels.forEach { channel ->
+            out[offset++] = channel.qos.type.toByte()
+            out[offset++] = channel.qos.dataRate.toByte()
+            out[offset++] = channel.qos.classType.toByte()
+        }
+        channels.forEach { channel ->
+            out[offset++] = channel.payloadType.toByte()
+        }
+        return out
+    }
+
     fun parseRequest(payload: ByteArray): ServiceConnectionRequest? {
         if (payload.size < 8 || payload[0].toInt() != MESSAGE_TYPE_CREATION_REQUEST) {
             return null

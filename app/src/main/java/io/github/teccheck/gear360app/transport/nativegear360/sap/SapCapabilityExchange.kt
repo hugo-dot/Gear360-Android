@@ -12,6 +12,53 @@ object SapCapabilityExchange {
     private const val LEGACY_ASP_VERSION = 0x0201
     private const val LEGACY_ROLE_PROVIDER = 1
     private const val LEGACY_AGENT_COUNT = 1
+    private const val LEGACY_QUERY_PERSISTENCE_MINUTES = 1440
+    private const val NORMAL_ALE_UUID = 1
+    private const val NORMAL_CONNECTION_TIMEOUT_SECONDS = 10
+
+    const val QUERY_TYPE_ALL = 1
+    const val QUERY_TYPE_MATCHING = 2
+    const val QUERY_TYPE_SYNC = 3
+    const val UNKNOWN_CHECKSUM = -1
+
+    /**
+     * Reproduces the initial query built by
+     * SACapabilityManager.sendCapexSyncQueryMessage(). Samsung sends message type 1,
+     * query type 3 followed by the profile count and persistent profile filters.
+     * Unlike query types 1 and 2, the sync layout does not carry a checksum.
+     */
+    fun composeSyncQuery(
+        profileIds: List<String> = listOf(SapHandshake.PROFILE_ID),
+        @Suppress("UNUSED_PARAMETER") checksum: Int = UNKNOWN_CHECKSUM
+    ): ByteArray {
+        require(profileIds.size <= 0xff) { "too many CAPEX profiles: ${profileIds.size}" }
+        val encodedProfiles = profileIds.map(SapProfileIdCodec::encode)
+        val out = ByteArray(3 + encodedProfiles.sumOf(ByteArray::size))
+        out[0] = MESSAGE_TYPE_QUERY.toByte()
+        out[1] = QUERY_TYPE_SYNC.toByte()
+        out[2] = profileIds.size.toByte()
+
+        var offset = 3
+        encodedProfiles.forEach { profile ->
+            profile.copyInto(out, offset)
+            offset += profile.size
+        }
+        return out
+    }
+
+    /**
+     * Reproduces SACapexFrameUtils.composeCapabilityDiscoveryLegacyQueryMessage().
+     * Normal profile identifiers are UTF-8 strings terminated by ';' on the wire.
+     */
+    fun composeLegacyQuery(profileId: String = SapHandshake.PROFILE_ID): ByteArray {
+        val profile = SapProfileIdCodec.encode(profileId)
+        val out = ByteArray(4 + profile.size)
+        out[0] = MESSAGE_TYPE_LEGACY_QUERY.toByte()
+        out[1] = 1 // normal query, one service record
+        SapCrc.writeUInt16(LEGACY_QUERY_PERSISTENCE_MINUTES, out, 2)
+        profile.copyInto(out, destinationOffset = 4)
+        return out
+    }
 
     fun describe(payload: ByteArray): String {
         if (payload.isEmpty()) return "CAPEX empty payload"
@@ -61,6 +108,71 @@ object SapCapabilityExchange {
         offset += 2
         out[offset] = ((LEGACY_ROLE_PROVIDER shl 6) and 0xc0).toByte()
         return out
+    }
+
+    /**
+     * Wire layout from SACapexFrameUtils.composeCapabilityDiscoveryResponseMessage().
+     * A sync response omits the checksum and carries a two-byte ALE record count.
+     */
+    fun composeResponse(
+        queryPayload: ByteArray,
+        profileId: String = SapHandshake.PROFILE_ID,
+        friendlyName: String = "DI_360_2DApp"
+    ): ByteArray {
+        require(queryPayload.size >= 2 && (queryPayload[0].toInt() and 0xff) == MESSAGE_TYPE_QUERY) {
+            "not a normal CAPEX query"
+        }
+
+        val queryType = queryPayload[1].toInt() and 0xff
+        require(queryType in QUERY_TYPE_ALL..QUERY_TYPE_SYNC) { "unknown CAPEX query type: $queryType" }
+
+        val profile = SapProfileIdCodec.encode(profileId)
+        val encodedFriendlyName = friendlyName.toByteArray(StandardCharsets.UTF_8)
+        val friendlyBytes = encodedFriendlyName.copyOf(minOf(encodedFriendlyName.size, 30))
+        val checksumBytes = if (queryType == QUERY_TYPE_SYNC) 0 else 4
+        val headerSize = 2 + checksumBytes + 2
+        val out = ByteArray(
+            headerSize +
+                2 + friendlyBytes.size + 1 + 2 +
+                2 + profile.size + 2 + 1 + 2
+        )
+
+        var offset = 0
+        out[offset++] = MESSAGE_TYPE_RESPONSE.toByte()
+        out[offset++] = queryType.toByte()
+        if (queryType != QUERY_TYPE_SYNC) {
+            val checksum = readQueryChecksum(queryPayload)
+            writeUInt32(checksum, out, offset)
+            offset += 4
+        }
+        SapCrc.writeUInt16(1, out, offset)
+        offset += 2
+
+        SapCrc.writeUInt16(NORMAL_ALE_UUID, out, offset)
+        offset += 2
+        friendlyBytes.copyInto(out, offset)
+        offset += friendlyBytes.size
+        out[offset++] = ';'.code.toByte()
+        SapCrc.writeUInt16(1, out, offset)
+        offset += 2
+
+        SapCrc.writeUInt16(LEGACY_COMPONENT_ID, out, offset)
+        offset += 2
+        profile.copyInto(out, offset)
+        offset += profile.size
+        SapCrc.writeUInt16(LEGACY_ASP_VERSION, out, offset)
+        offset += 2
+        out[offset++] = LEGACY_ROLE_PROVIDER.toByte()
+        SapCrc.writeUInt16(NORMAL_CONNECTION_TIMEOUT_SECONDS, out, offset)
+        return out
+    }
+
+    private fun readQueryChecksum(queryPayload: ByteArray): Int {
+        if (queryPayload.size < 6) return 0
+        return ((queryPayload[2].toInt() and 0xff) shl 24) or
+            ((queryPayload[3].toInt() and 0xff) shl 16) or
+            ((queryPayload[4].toInt() and 0xff) shl 8) or
+            (queryPayload[5].toInt() and 0xff)
     }
 
     private fun describeNormalQuery(payload: ByteArray): String {

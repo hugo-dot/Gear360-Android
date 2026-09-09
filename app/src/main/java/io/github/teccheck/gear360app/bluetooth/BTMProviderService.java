@@ -20,6 +20,8 @@ public class BTMProviderService extends SAAgentV2 {
     private static final int PRIMARY_JSON_CHANNEL = 204;
     private static final int MAX_ALREADY_EXISTS_RETRIES = 2;
     private static final long ALREADY_EXISTS_RETRY_DELAY_MS = 1200L;
+    private static final int MAX_SERVICE_CONNECTION_TIMEOUT_RETRIES = 2;
+    private static final long SERVICE_CONNECTION_TIMEOUT_MS = 12000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -28,6 +30,8 @@ public class BTMProviderService extends SAAgentV2 {
     private boolean peerDiscoveryRunning = false;
     private boolean serviceConnectionRequested = false;
     private int alreadyExistsRetries = 0;
+    private int serviceConnectionTimeoutRetries = 0;
+    private Runnable serviceConnectionTimeoutRunnable = null;
 
     public BTMProviderService(Context context) {
         super(TAG, context, BTMProviderConnection.class);
@@ -115,17 +119,24 @@ public class BTMProviderService extends SAAgentV2 {
         peerDiscoveryRunning = false;
         serviceConnectionRequested = false;
         alreadyExistsRetries = 0;
+        serviceConnectionTimeoutRetries = 0;
+        cancelServiceConnectionTimeout();
 
         if (providerConnection == null) {
-            releaseAgent();
             return false;
         }
 
         providerConnection.close();
         providerConnection = null;
-
-        releaseAgent();
         return true;
+    }
+
+    public void releaseProvider() {
+        Log.i(TAG, "releaseProvider");
+        closeConnection();
+        mainHandler.removeCallbacksAndMessages(null);
+        callback = null;
+        releaseAgent();
     }
 
     @Override
@@ -146,8 +157,7 @@ public class BTMProviderService extends SAAgentV2 {
             if (peer != null) {
                 Log.i(
                     TAG,
-                    "PEER_AGENT_FOUND; provider role waits for incoming "
-                        + SAAgentV2.ACTION_SERVICE_CONNECTION_REQUESTED
+                    "PEER_AGENT_FOUND; requesting service connection as the original Gear 360 Manager does"
                 );
                 if (callback != null) {
                     callback.onSapPeerFound(
@@ -156,6 +166,7 @@ public class BTMProviderService extends SAAgentV2 {
                         safeProductId(peer)
                     );
                 }
+                requestServiceConnectionSafely(peer, "peer discovery response");
             }
             return;
         }
@@ -196,8 +207,7 @@ public class BTMProviderService extends SAAgentV2 {
             if (peer != null) {
                 Log.i(
                     TAG,
-                    "PEER_AGENT_AVAILABLE; provider role waits for incoming "
-                        + SAAgentV2.ACTION_SERVICE_CONNECTION_REQUESTED
+                    "PEER_AGENT_AVAILABLE; ensuring service connection is requested"
                 );
                 if (callback != null) {
                     callback.onSapPeerFound(
@@ -206,6 +216,7 @@ public class BTMProviderService extends SAAgentV2 {
                         safeProductId(peer)
                     );
                 }
+                requestServiceConnectionSafely(peer, "peer availability update");
             }
         } else if (result == SAAgentV2.PEER_AGENT_UNAVAILABLE) {
             Log.w(TAG, "SAP peer unavailable; Gear 360 service disappeared");
@@ -231,10 +242,48 @@ public class BTMProviderService extends SAAgentV2 {
             }
             Log.i(TAG, "Accepting incoming SAP service connection");
             acceptServiceConnectionRequest(peerAgent);
+            scheduleServiceConnectionTimeout(peerAgent, "incoming request");
         } catch (RuntimeException e) {
             serviceConnectionRequested = false;
             Log.e(TAG, "acceptServiceConnectionRequest failed", e);
             if (callback != null) {
+                callback.onError(SAAgentV2.ERROR_FATAL);
+            }
+        }
+    }
+
+    private synchronized void requestServiceConnectionSafely(SAPeerAgent peerAgent, String source) {
+        if (peerAgent == null) {
+            Log.w(TAG, "Cannot request SAP service connection; peer is null source=" + source);
+            return;
+        }
+        if (isSocketConnected()) {
+            notifySapSocketConnected(peerAgent);
+            return;
+        }
+        if (serviceConnectionRequested) {
+            Log.i(TAG, "SAP service connection already pending; source=" + source);
+            return;
+        }
+
+        serviceConnectionRequested = true;
+        try {
+            Log.i(TAG, "OUTGOING SERVICE CONNECTION REQUEST source=" + source
+                + " peer=" + peerSummary(peerAgent));
+            if (callback != null) {
+                callback.onSapConnectionRequested(
+                    safeAccessoryName(peerAgent),
+                    safePeerId(peerAgent),
+                    safeProductId(peerAgent)
+                );
+            }
+            requestServiceConnection(peerAgent);
+            scheduleServiceConnectionTimeout(peerAgent, source);
+        } catch (RuntimeException e) {
+            serviceConnectionRequested = false;
+            Log.e(TAG, "requestServiceConnection failed source=" + source, e);
+            if (callback != null) {
+                callback.onSapConnectionFailed(SAAgentV2.ERROR_FATAL, "requestServiceConnection failed");
                 callback.onError(SAAgentV2.ERROR_FATAL);
             }
         }
@@ -245,6 +294,7 @@ public class BTMProviderService extends SAAgentV2 {
         super.onError(peerAgent, errorMessage, errorCode);
         peerDiscoveryRunning = false;
         serviceConnectionRequested = false;
+        cancelServiceConnectionTimeout();
         Log.e(
             TAG,
             "onError peer=" + peerSummary(peerAgent)
@@ -267,12 +317,16 @@ public class BTMProviderService extends SAAgentV2 {
         );
 
         if (result == SAAgentV2.CONNECTION_SUCCESS) {
+            cancelServiceConnectionTimeout();
             handleConnectionSuccess(peerAgent, socket);
         } else if (result == SAAgentV2.CONNECTION_ALREADY_EXIST) {
+            cancelServiceConnectionTimeout();
             handleConnectionAlreadyExists(peerAgent);
         } else if (result == SAAgentV2.CONNECTION_DUPLICATE_REQUEST) {
             Log.w(TAG, "SAP service connection duplicate request; waiting for response");
+            scheduleServiceConnectionTimeout(peerAgent, "duplicate request response");
         } else {
+            cancelServiceConnectionTimeout();
             peerDiscoveryRunning = false;
             serviceConnectionRequested = false;
             Log.e(TAG, "SAP service connection failed result=" + connectionResultName(result));
@@ -287,6 +341,7 @@ public class BTMProviderService extends SAAgentV2 {
         peerDiscoveryRunning = false;
         serviceConnectionRequested = false;
         alreadyExistsRetries = 0;
+        serviceConnectionTimeoutRetries = 0;
 
         if (socket == null) {
             Log.e(TAG, "CONNECTION_SUCCESS with null SASocket");
@@ -348,6 +403,55 @@ public class BTMProviderService extends SAAgentV2 {
             },
             ALREADY_EXISTS_RETRY_DELAY_MS
         );
+    }
+
+    private synchronized void scheduleServiceConnectionTimeout(
+        final SAPeerAgent peerAgent,
+        final String source
+    ) {
+        cancelServiceConnectionTimeout();
+        serviceConnectionTimeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                synchronized (BTMProviderService.this) {
+                    serviceConnectionTimeoutRunnable = null;
+                    if (isSocketConnected()) {
+                        return;
+                    }
+
+                    serviceConnectionRequested = false;
+                    if (serviceConnectionTimeoutRetries >= MAX_SERVICE_CONNECTION_TIMEOUT_RETRIES) {
+                        String message = "SAP service connection timed out without SASocket source=" + source;
+                        Log.e(TAG, message);
+                        if (callback != null) {
+                            callback.onSapConnectionFailed(
+                                SAAgentV2.CONNECTION_FAILURE_PEERAGENT_NO_RESPONSE,
+                                message
+                            );
+                            callback.onError(SAAgentV2.CONNECTION_FAILURE_PEERAGENT_NO_RESPONSE);
+                        }
+                        return;
+                    }
+
+                    serviceConnectionTimeoutRetries++;
+                    Log.w(
+                        TAG,
+                        "SAP service connection timeout source=" + source
+                            + "; retrying peer discovery " + serviceConnectionTimeoutRetries
+                            + "/" + MAX_SERVICE_CONNECTION_TIMEOUT_RETRIES
+                    );
+                    findSaPeers();
+                }
+            }
+        };
+        mainHandler.postDelayed(serviceConnectionTimeoutRunnable, SERVICE_CONNECTION_TIMEOUT_MS);
+    }
+
+    private synchronized void cancelServiceConnectionTimeout() {
+        if (serviceConnectionTimeoutRunnable != null) {
+            mainHandler.removeCallbacks(serviceConnectionTimeoutRunnable);
+            serviceConnectionTimeoutRunnable = null;
+        }
     }
 
     private void notifySapSocketConnected(SAPeerAgent peerAgent) {
@@ -697,10 +801,12 @@ public class BTMProviderService extends SAAgentV2 {
         @Override
         public void onServiceConnectionLost(int errorCode) {
             Log.w(TAG, "SASocket connection lost error=" + errorCode);
+            cancelServiceConnectionTimeout();
             providerConnection = null;
             peerDiscoveryRunning = false;
             serviceConnectionRequested = false;
             alreadyExistsRetries = 0;
+            serviceConnectionTimeoutRetries = 0;
             if (callback != null) {
                 callback.onServiceDisconnection();
             }

@@ -3,6 +3,7 @@ package io.github.teccheck.gear360app.transport.nativegear360.sap
 enum class SapFrameType {
     DATA,
     CONTROL,
+    DEVICE,
 }
 
 enum class SapTransportCrcMode {

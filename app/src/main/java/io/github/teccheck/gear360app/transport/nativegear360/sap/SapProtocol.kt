@@ -21,6 +21,7 @@ object SapProtocol {
         val frameBit = when (frameType) {
             SapFrameType.DATA -> 0
             SapFrameType.CONTROL -> 1
+            SapFrameType.DEVICE -> error("Device packets do not use a SAP protocol header")
         }
 
         out[0] = (((frameBit shl 4) and 0x10) or ((sessionId and 0x3c0) ushr 6)).toByte()

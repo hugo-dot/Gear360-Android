@@ -41,13 +41,33 @@ class SapServiceConnectionTest {
     }
 
     @Test
-    fun profileCodecUsesSamsungFixedSeventeenByteProfileIds() {
+    fun profileCodecUsesSamsungDelimitedProfileIds() {
         val encoded = SapProfileIdCodec.encode(SapHandshake.PROFILE_ID)
         val decoded = SapProfileIdCodec.read(encoded, 0)
 
-        assertEquals(17, encoded.size)
+        assertEquals(18, encoded.size)
+        assertEquals(';'.code.toByte(), encoded.last())
         assertEquals(SapHandshake.PROFILE_ID, decoded?.value)
-        assertEquals(17, decoded?.nextOffset)
+        assertEquals(18, decoded?.nextOffset)
+    }
+
+    @Test
+    fun requestComposerRoundTripsAllChannelRecords() {
+        val channels = listOf(
+            ServiceChannelRecord(204, 11, QosRecord(4, 0, 1), 0),
+            ServiceChannelRecord(222, 12, QosRecord(4, 0, 1), 0),
+            ServiceChannelRecord(230, 13, QosRecord(4, 0, 1), 0)
+        )
+        val payload = SapServiceConnection.composeRequest(
+            acceptorId = 1,
+            initiatorId = 2,
+            profileId = SapHandshake.PROFILE_ID,
+            channels = channels
+        )
+
+        val request = requireNotNull(SapServiceConnection.parseRequest(payload))
+        assertEquals(SapHandshake.PROFILE_ID, request.profileId)
+        assertEquals(channels, request.channels)
     }
 
     private fun sampleRequest(): ByteArray {

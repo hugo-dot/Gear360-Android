@@ -86,7 +86,7 @@ La build parse:
 
 - creation request;
 - creation response;
-- profile id fixe 17 octets pour `/system/DI_360_2D`, ou profile id variable termine par `;` quand il commence par `=`;
+- profile id variable termine par `;` pour `/system/DI_360_2D`, ou profile id fixe 17 octets lorsqu'il commence par `=`;
 - liste des session ids;
 - liste des channel ids;
 - QoS triplets;
@@ -113,14 +113,27 @@ uint16 uuid
 utf8   friendlyName, termine par ';'
 uint16 agentCount
 uint16 componentId
-bytes  profileId, fixe 17 octets pour /system/DI_360_2D
+bytes  profileId UTF-8 termine par ';'
 uint16 aspVersion
 uint8  role << 6
 ```
 
+## CAPEX Sync
+
+La requete initiale utilise la session reservee `1020` pour les accessoires anterieurs a ASP 3.3:
+
+```text
+uint8 messageType = 1
+uint8 queryType = 3
+uint8 profileCount
+bytes profileIds termines par ';'
+```
+
+Cette variante Sync ne contient pas le checksum 32 bits utilise par d'autres types de requete CAPEX.
+
 ## Limites connues
 
-- CAPEX moderne non implemente.
+- Reponse CAPEX moderne non implementee; la requete Sync initiale est implementee.
 - ACK/ABORT/control frame observes mais non interpretes completement.
 - Sequence number non implemente.
 - Fragmentation applicative non reassemblee au-dela du transport length-prefix.

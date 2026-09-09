@@ -9,19 +9,22 @@ internal object SapProfileIdCodec {
     fun encode(profileId: String): ByteArray {
         val bytes = profileId.toByteArray(StandardCharsets.UTF_8)
         return if (bytes.firstOrNull()?.toInt() == '='.code) {
-            bytes + ';'.code.toByte()
-        } else {
             require(bytes.size >= FIXED_PROFILE_LENGTH) {
                 "fixed SAP profile id must contain at least $FIXED_PROFILE_LENGTH bytes: $profileId"
             }
             bytes.copyOfRange(0, FIXED_PROFILE_LENGTH)
+        } else {
+            require(bytes.size <= MAX_VARIABLE_PROFILE_LENGTH) {
+                "variable SAP profile id exceeds $MAX_VARIABLE_PROFILE_LENGTH bytes: $profileId"
+            }
+            bytes + ';'.code.toByte()
         }
     }
 
     fun read(payload: ByteArray, startOffset: Int): ReadResult? {
         if (startOffset >= payload.size) return null
 
-        return if (payload[startOffset].toInt() != '='.code) {
+        return if (payload[startOffset].toInt() == '='.code) {
             val end = startOffset + FIXED_PROFILE_LENGTH
             if (end > payload.size) return null
             ReadResult(
@@ -30,7 +33,7 @@ internal object SapProfileIdCodec {
             )
         } else {
             var offset = startOffset
-            while (offset < payload.size && offset - startOffset <= MAX_VARIABLE_PROFILE_LENGTH) {
+            while (offset < payload.size && offset - startOffset < MAX_VARIABLE_PROFILE_LENGTH) {
                 if (payload[offset].toInt() == ';'.code) {
                     return ReadResult(
                         value = payload.copyOfRange(startOffset, offset).toString(StandardCharsets.UTF_8),

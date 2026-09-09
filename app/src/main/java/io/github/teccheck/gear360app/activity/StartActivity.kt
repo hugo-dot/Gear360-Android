@@ -6,14 +6,29 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import io.github.teccheck.gear360app.utils.AndroidPermissionUtils
 import io.github.teccheck.gear360app.utils.SettingsHelper
+import io.github.teccheck.gear360app.BuildConfig
+import io.github.teccheck.gear360app.transport.nativegear360.NativeBluetoothDiagnostics
+import android.util.Log
 
 private const val PERMISSION_REQUEST_CODE = 0xACDC
+private const val EXTRA_DEBUG_LOCAL_BT_ADDRESS = "gear360_debug_local_bt_address"
+private const val TAG = "G360-SAP-AUTH"
 
 class StartActivity : AppCompatActivity() {
     private var launchedNext = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (BuildConfig.DEBUG) {
+            intent.getStringExtra(EXTRA_DEBUG_LOCAL_BT_ADDRESS)?.let { address ->
+                if (NativeBluetoothDiagnostics.setLocalAdapterAddressOverride(this, address)) {
+                    Log.i(TAG, "Debug local Bluetooth identity stored")
+                } else {
+                    Log.e(TAG, "Rejected malformed debug local Bluetooth identity")
+                }
+            }
+        }
 
         if (checkPermissions()) {
             startNextActivityIfReady()

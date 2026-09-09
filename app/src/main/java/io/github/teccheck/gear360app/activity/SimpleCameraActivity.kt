@@ -432,7 +432,7 @@ class SimpleCameraActivity : BaseActivity() {
     private fun setCaptureControlsEnabled(enabled: Boolean) {
         photoButton.isEnabled = enabled
         startVideoButton.isEnabled = enabled
-        stopVideoButton.isEnabled = enabled
+        stopVideoButton.isEnabled = false
     }
 
     private fun showServiceStarting() {

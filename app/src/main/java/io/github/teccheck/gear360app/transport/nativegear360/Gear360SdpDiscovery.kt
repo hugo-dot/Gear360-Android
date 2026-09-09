@@ -31,6 +31,18 @@ class Gear360SdpDiscovery(private val context: Context) {
         val latch = CountDownLatch(1)
         var discovered = cachedUuids(device)
 
+        if (selectControlUuid(discovered) in setOf(
+                GEAR360_SAP_UUID_PRIMARY,
+                GEAR360_SAP_UUID_SECONDARY
+            )
+        ) {
+            Log.i(
+                TAG,
+                "Using cached Gear360 SDP service immediately address=$address uuids=${discovered.toDisplayString()}"
+            )
+            return discovered
+        }
+
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action != BluetoothDevice.ACTION_UUID) return

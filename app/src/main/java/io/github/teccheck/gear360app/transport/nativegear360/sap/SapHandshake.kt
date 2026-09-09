@@ -8,6 +8,8 @@ object SapHandshake {
 
 enum class SapHandshakePhase {
     RFCOMM_CONNECTED,
+    PEER_DESCRIPTION,
+    AUTHENTICATION,
     PROTOCOL_INIT,
     CAPABILITY_EXCHANGE,
     SERVICE_CONNECTION,

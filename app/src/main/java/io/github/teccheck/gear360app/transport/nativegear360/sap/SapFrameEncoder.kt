@@ -4,6 +4,9 @@ class SapFrameEncoder(
     private val defaultCrcMode: SapTransportCrcMode = SapTransportCrcMode.DISABLED
 ) {
     fun encode(frame: SapFrame): ByteArray {
+        if (frame.frameType == SapFrameType.DEVICE) {
+            return encodeDevicePacket(frame.payload, frame.transportCrcMode)
+        }
         return encodeData(
             sessionId = frame.sessionId,
             payload = frame.payload,
@@ -22,6 +25,9 @@ class SapFrameEncoder(
         sequenceNumber: Int? = null,
         crcMode: SapTransportCrcMode = defaultCrcMode
     ): ByteArray {
+        require(frameType != SapFrameType.DEVICE) {
+            "Use encodeDevicePacket for Samsung Accessory device packets"
+        }
         val sapPayload = SapProtocol.composePayload(
             sessionId = sessionId,
             frameType = frameType,
@@ -30,6 +36,16 @@ class SapFrameEncoder(
             sequenceNumber = sequenceNumber
         )
         return encodeTransportPayload(sapPayload, crcMode)
+    }
+
+    fun encodeDevicePacket(
+        payload: ByteArray,
+        crcMode: SapTransportCrcMode = defaultCrcMode
+    ): ByteArray {
+        requireNotNull(SapAccessoryAuthentication.parse(payload)) {
+            "Invalid Samsung Accessory authentication device packet"
+        }
+        return encodeTransportPayload(payload, crcMode)
     }
 
     fun encodeTransportPayload(

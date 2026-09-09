@@ -70,6 +70,8 @@ class Gear360Service : Service() {
     private var protocolReceivedConfig = false
     private var protocolChannel204RxCount = 0
     private var diagnosticsSnapshot = Gear360Diagnostics()
+    private var activeControlBackend = ""
+    private var legacyFallbackAttempted = false
 
     private val _connectionState = MutableLiveData<ConnectionState>(ConnectionState.INVALID)
     val connectionState: LiveData<ConnectionState> = _connectionState
@@ -98,6 +100,7 @@ class Gear360Service : Service() {
     private val transportListener = object : Gear360ControlTransport.Listener {
         override fun onBackendSelected(name: String) {
             Log.i(TAG_CONNECTION, "Control backend selected: $name")
+            activeControlBackend = name
             updateDiagnostics(backend = name)
         }
 
@@ -143,6 +146,7 @@ class Gear360Service : Service() {
 
         override fun onTransportUnavailable(reason: String, error: Throwable?) {
             Log.e(TAG_CONNECTION, reason, error)
+            if (tryFallbackToNative(reason)) return
             connectionOrchestrator.error(reason)
             updateDiagnostics(lastError = reason, accessoryTransport = "UNAVAILABLE")
             updateConnectionState(ConnectionState.ERROR)
@@ -194,6 +198,7 @@ class Gear360Service : Service() {
 
         override fun onSapPeerDiscoveryFailed(result: Int, message: String) {
             Log.e(TAG_CONNECTION, "SAP peer discovery failed result=$result message=$message")
+            if (tryFallbackToNative(message)) return
             connectionOrchestrator.error(message)
             updateDiagnostics(sapPeer = "NOT FOUND", lastError = message)
             updateConnectionState(ConnectionState.ERROR)
@@ -201,6 +206,7 @@ class Gear360Service : Service() {
 
         override fun onSapConnectionFailed(result: Int, message: String) {
             Log.e(TAG_CONNECTION, "SAP connection failed result=$result message=$message")
+            if (tryFallbackToNative(message)) return
             connectionOrchestrator.error(message)
             updateDiagnostics(sapSocket = "DISCONNECTED", lastError = message)
             updateConnectionState(ConnectionState.ERROR)
@@ -223,6 +229,7 @@ class Gear360Service : Service() {
 
         override fun onError(reason: String, error: Throwable?) {
             Log.e(TAG_CONNECTION, reason, error)
+            if (tryFallbackToNative(reason)) return
             connectionOrchestrator.error(reason)
             updateDiagnostics(lastError = reason)
             updateConnectionState(ConnectionState.ERROR)
@@ -405,6 +412,7 @@ class Gear360Service : Service() {
         }
 
         updateDiagnostics(bluetoothDevice = device.name)
+        legacyFallbackAttempted = false
         selectedDevice.value?.let {
             if (it.address != device.address && ::controlTransport.isInitialized) {
                 controlTransport.disconnect(it)
@@ -436,6 +444,26 @@ class Gear360Service : Service() {
         }
 
         controlTransport.connect(device)
+    }
+
+    private fun tryFallbackToNative(reason: String): Boolean {
+        if (activeControlBackend != "SAMSUNG LEGACY" || legacyFallbackAttempted) return false
+        val device = selectedDevice.value ?: return false
+        legacyFallbackAttempted = true
+        Log.w(TAG_CONNECTION, "Legacy backend failed; switching to native: $reason")
+        updateDiagnostics(lastError = "Legacy failed, trying native: $reason")
+
+        mainHandler.post {
+            if (activeControlBackend != "SAMSUNG LEGACY") return@post
+            controlTransport.release()
+            controlTransport = Gear360TransportFactory.createNativeDiagnostics(
+                applicationContext,
+                transportListener
+            )
+            updateConnectionState(ConnectionState.BT_CONNECTING)
+            controlTransport.connect(device)
+        }
+        return true
     }
 
     fun disconnect(device: DeviceDescription? = selectedDevice.value) {
