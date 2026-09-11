@@ -25,8 +25,16 @@ class NativeSapSession(
     @Volatile private var peerDescriptionSessionId: Int? = null
     @Volatile private var waitingForPeerConfirm = false
     private var authenticator: SapClientAuthenticator? = null
+    private var legacyDescriptionAnswered = false
+    private var negotiatedCrcMode = SapTransportCrcMode.DISABLED
+    private var capexSessionId = SapProtocol.SESSION_ID_CAPEX
+    private var capexServicePending = false
 
     fun onRfcommConnected() {
+        legacyDescriptionAnswered = false
+        negotiatedCrcMode = SapTransportCrcMode.DISABLED
+        capexServicePending = false
+        capexSessionId = SapProtocol.SESSION_ID_CAPEX
         peerDescriptionSessionId = null
         waitingForPeerConfirm = false
         phase = SapHandshakePhase.PEER_DESCRIPTION
@@ -42,7 +50,11 @@ class NativeSapSession(
         listener.onFrameRx(frame)
 
         if (frame.frameType == SapFrameType.DEVICE) {
-            handleAuthentication(frame)
+            if (SapAccessoryAuthentication.parse(frame.payload) != null) {
+                handleAuthentication(frame)
+            } else {
+                handleLegacyPeerDescription(frame)
+            }
             return emptyList()
         }
 
@@ -59,7 +71,7 @@ class NativeSapSession(
         }
 
         return when (frame.sessionId) {
-            SapProtocol.SESSION_ID_CAPEX -> {
+            capexSessionId -> {
                 handleCapabilityExchange(frame)
                 emptyList()
             }
@@ -180,6 +192,7 @@ class NativeSapSession(
                         phase,
                         "WSM authentication confirmed; waiting for peer-description confirmation"
                     )
+                    if (legacyDescriptionAnswered) completePeerDescription("legacy response and WSM authentication accepted")
                 }
 
                 else -> error(
@@ -209,6 +222,34 @@ class NativeSapSession(
             SapPeerDescription.MESSAGE_RESPONSE,
             SapPeerDescription.MESSAGE_ERROR
         )
+    }
+
+    private fun handleLegacyPeerDescription(frame: SapFrame) {
+        val peer = peerDescription.parse(frame.payload)
+        if (peer == null || peer.messageType != SapPeerDescription.MESSAGE_REQUEST) {
+            failPeerDescription("unexpected legacy device message type=${peerDescription.messageType(frame.payload)}")
+            return
+        }
+        if (legacyDescriptionAnswered) {
+            listener.onProtocolEvent("Duplicate legacy PD request ignored while authenticating")
+            return
+        }
+        listener.onProtocolEvent("PD REQUEST version=0x%04X product=%s manufacturer=%s".format(
+            peer.protocolVersion, peer.productId, peer.manufacturerId))
+        val response = try {
+            peerDescription.composeLegacyResponse(peer)
+        } catch (error: IllegalArgumentException) {
+            failPeerDescription(error.message ?: "invalid legacy description")
+            return
+        }
+        if (!writer(encoder.encodeDevicePacket(response, crcMode))) {
+            failPeerDescription("legacy PD RESPONSE write failed")
+            return
+        }
+        legacyDescriptionAnswered = true
+        negotiatedCrcMode = if (peer.connectionlessMode == 1) SapTransportCrcMode.ENABLED else SapTransportCrcMode.DISABLED
+        keepAlive.markTx(System.currentTimeMillis())
+        listener.onProtocolEvent("PD RESPONSE sent as device packet; waiting for WSM authentication")
     }
 
     private fun handlePeerDescription(frame: SapFrame) {
@@ -290,8 +331,21 @@ class NativeSapSession(
 
     private fun completePeerDescription(detail: String) {
         waitingForPeerConfirm = false
+        if (legacyDescriptionAnswered) crcMode = negotiatedCrcMode
         phase = SapHandshakePhase.PROTOCOL_INIT
         listener.onPhaseChanged(phase, "Peer Description 2.1 complete: $detail; starting CAPEX")
+        if (legacyDescriptionAnswered) {
+            capexServicePending = true
+            val wire = encoder.encodeData(SapProtocol.SESSION_ID_SERVICE_CONNECTION,
+                SapCapabilityExchange.composeServiceRequest(), crcMode = crcMode)
+            if (!writer(wire)) {
+                failPeerDescription("CAPEX service creation write failed")
+                return
+            }
+            phase = SapHandshakePhase.CAPABILITY_EXCHANGE
+            listener.onPhaseChanged(phase, "SAP 2.1: requested ServiceCapabilityDiscovery on channel 255 with CRC=$crcMode")
+            return
+        }
         val query = SapCapabilityExchange.composeSyncQuery()
         val wire = encoder.encodeData(
             sessionId = SapProtocol.SESSION_ID_CAPEX,
@@ -325,7 +379,7 @@ class NativeSapSession(
             SapCapabilityExchange.MESSAGE_TYPE_LEGACY_QUERY -> {
                 val response = SapCapabilityExchange.composeLegacyResponse()
                 val wire = encoder.encodeData(
-                    sessionId = SapProtocol.SESSION_ID_CAPEX,
+                    sessionId = capexSessionId,
                     payload = response,
                     crcMode = crcMode
                 )
@@ -349,7 +403,7 @@ class NativeSapSession(
                     return
                 }
                 val wire = encoder.encodeData(
-                    sessionId = SapProtocol.SESSION_ID_CAPEX,
+                    sessionId = capexSessionId,
                     payload = response,
                     crcMode = crcMode
                 )
@@ -428,6 +482,22 @@ class NativeSapSession(
             listener.onProtocolEvent(
                 "service connection response status=${response.statusCode} profile=${response.profileId} sessions=${response.sessionIds}"
             )
+            if (capexServicePending && response.profileId == SapCapabilityExchange.SERVICE_PROFILE) {
+                if (response.statusCode != SapServiceConnection.STATUS_ACCEPTED ||
+                    response.acceptorId != 0xffff || response.initiatorId != 0xffff ||
+                    response.sessionIds != listOf(SapCapabilityExchange.LOCAL_LEGACY_SESSION_ID)) {
+                    failPeerDescription("CAPEX service rejected or mismatched: $response")
+                    return
+                }
+                capexServicePending = false
+                capexSessionId = response.sessionIds.single()
+                val wire = encoder.encodeData(capexSessionId, SapCapabilityExchange.composeSyncQuery(), crcMode = crcMode)
+                if (!writer(wire)) {
+                    failPeerDescription("CAPEX sync query write failed")
+                    return
+                }
+                listener.onProtocolEvent("CAPEX service accepted session=$capexSessionId; sync query sent")
+            }
             return
         }
 

@@ -22,6 +22,9 @@ class SapPeerDescription(
         val messageType = payload[offset++].toInt() and 0xff
         val protocolVersion = readUInt16(payload, offset).also { offset += 2 }
         val softwareVersion = readUInt16(payload, offset).also { offset += 2 }
+        if (messageType == MESSAGE_RESPONSE) {
+            if (payload.size < MIN_FULL_MESSAGE_SIZE + 1 || payload[offset++].toInt() != 0) return null
+        }
         val configCode = payload[offset++].toInt() and 0xff
         val apduSize = readInt32(payload, offset).also { offset += 4 }
         val ssduSize = readUInt16(payload, offset).also { offset += 2 }
@@ -66,6 +69,13 @@ class SapPeerDescription(
         return composeFullMessage(MESSAGE_OFFER)
     }
 
+    /** SAP 2.1 request/response are device packets, without a session header. */
+    fun composeLegacyResponse(peer: SapPeerDescriptionMessage): ByteArray {
+        require(peer.messageType == MESSAGE_REQUEST && peer.protocolVersion == PROTOCOL_VERSION_2_1)
+        negotiatedProtocolVersion = peer.protocolVersion
+        return composeFullMessage(MESSAGE_RESPONSE, peer)
+    }
+
     /**
      * SAPdProbeMessageUtils.composeConfirmMessageInternal() uses the compact
      * six-byte confirmation, not the full Peer Description payload.
@@ -86,19 +96,20 @@ class SapPeerDescription(
         return payload[5].toInt() and 0xff
     }
 
-    private fun composeFullMessage(messageType: Int): ByteArray {
+    private fun composeFullMessage(messageType: Int, peer: SapPeerDescriptionMessage? = null): ByteArray {
         val output = ByteArrayOutputStream()
         output.write(messageType)
         output.writeUInt16(negotiatedProtocolVersion)
         output.writeUInt16(SOFTWARE_VERSION_2_1)
+        if (messageType == MESSAGE_RESPONSE) output.write(STATUS_ACCEPTED)
         output.write(CONFIG_CODE_FULL)
-        output.writeInt32(BLUETOOTH_APDU_SIZE)
-        output.writeUInt16(BLUETOOTH_SSDU_SIZE)
-        output.writeUInt16(MAX_SESSIONS)
-        output.writeUInt16(SESSION_TIMEOUT_MS)
-        output.write(TRANSPORT_MODE_RELIABLE)
-        output.writeUInt16(TRANSPORT_WINDOW_SIZE)
-        output.write(CONNECTIONLESS_MODE)
+        output.writeInt32(minOf(BLUETOOTH_APDU_SIZE, peer?.apduSize ?: BLUETOOTH_APDU_SIZE))
+        output.writeUInt16(minOf(BLUETOOTH_SSDU_SIZE, peer?.ssduSize ?: BLUETOOTH_SSDU_SIZE))
+        output.writeUInt16(minOf(MAX_SESSIONS, peer?.maxSessions ?: MAX_SESSIONS))
+        output.writeUInt16(minOf(SESSION_TIMEOUT_MS, peer?.sessionTimeoutMs ?: SESSION_TIMEOUT_MS))
+        output.write(if (peer == null || peer.transportMode == TRANSPORT_MODE_RELIABLE) TRANSPORT_MODE_RELIABLE else 0)
+        output.writeUInt16(minOf(TRANSPORT_WINDOW_SIZE, peer?.transportWindowSize ?: TRANSPORT_WINDOW_SIZE))
+        output.write(minOf(CONNECTIONLESS_MODE, peer?.connectionlessMode ?: CONNECTIONLESS_MODE))
         output.writeTerminated(identity.productId)
         output.writeTerminated(identity.manufacturerId)
         output.writeTerminated(identity.friendlyName)
@@ -147,8 +158,20 @@ class SapPeerDescription(
         const val MESSAGE_CONFIRM = 4
         const val MESSAGE_REQUEST = 5
         const val MESSAGE_RESPONSE = 6
+        const val MESSAGE_LEGACY_CONFIRM = 7
+        const val MESSAGE_SUCCESS = 9
         const val MESSAGE_ERROR = 8
         const val STATUS_ACCEPTED = 0
+
+        fun isLegacyDevicePacket(payload: ByteArray): Boolean {
+            if (payload.contentEquals(byteArrayOf(MESSAGE_SUCCESS.toByte()))) return true
+            if (payload.size < 6 || payload[1] != 2.toByte() || payload[2] != 1.toByte()) return false
+            return when (payload[0].toInt() and 0xff) {
+                MESSAGE_REQUEST, MESSAGE_RESPONSE -> payload.size >= MIN_FULL_MESSAGE_SIZE
+                MESSAGE_LEGACY_CONFIRM, MESSAGE_ERROR -> payload.size == CONFIRM_MESSAGE_SIZE
+                else -> false
+            }
+        }
 
         private const val PROTOCOL_VERSION_2_0 = 0x0200
         private const val PROTOCOL_VERSION_2_1 = 0x0201

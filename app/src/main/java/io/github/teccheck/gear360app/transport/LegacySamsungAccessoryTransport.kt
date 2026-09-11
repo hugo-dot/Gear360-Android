@@ -1,6 +1,7 @@
 package io.github.teccheck.gear360app.transport
 
 import android.content.Context
+import android.bluetooth.BluetoothDevice
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -10,7 +11,11 @@ import com.samsung.android.sdk.accessory.SAAgentV2
 import com.samsung.android.sdk.accessorymanager.SamAccessoryManager
 import com.samsung.android.sdk.accessorymanager.SamDevice
 import io.github.teccheck.gear360app.bluetooth.BTMProviderService
+import io.github.teccheck.gear360app.transport.nativegear360.ClassicLinkState
+import io.github.teccheck.gear360app.transport.nativegear360.Gear360ClassicBluetoothLink
+import io.github.teccheck.gear360app.utils.AndroidPermissionUtils
 import io.github.teccheck.gear360app.utils.DeviceDescription
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -18,8 +23,11 @@ private const val TAG_SAM = "LEGACY-SAM"
 private const val TAG_SAP = "LEGACY-SAP"
 private const val TAG_TX = "LEGACY-TX"
 private const val SA_TRANSPORT_TYPE = SamAccessoryManager.TRANSPORT_BT
-private const val SOCKET_RETRY_DELAY_MS = 1_500L
-private const val MAX_SOCKET_CONNECT_ATTEMPTS = 3
+private const val LEGACY_BOOTSTRAP_TIMEOUT_MS = 20_000L
+private const val LEGACY_BOOTSTRAP_RETRY_DELAY_MS = 4_000L
+private const val LEGACY_BOOTSTRAP_MAX_ATTEMPTS = 3
+private val GEAR360_OUTBOUND_RFCOMM_UUID: UUID =
+    UUID.fromString("a49eb41e-cb06-495c-9f4f-bb80a90cdf00")
 
 class LegacySamsungAccessoryTransport(
     context: Context,
@@ -33,14 +41,48 @@ class LegacySamsungAccessoryTransport(
     private var activeConnectDevice: DeviceDescription? = null
     private var accessoryConnected = false
     private var unavailable = false
-    private var socketConnectAttempts = 0
+    private var bootstrapStarted = false
+    private var bootstrapConnected = false
+    private var bootstrapAttempts = 0
+    private var bootstrapTimeout: Runnable? = null
+    private var bootstrapRetry: Runnable? = null
     private val connectionWorker: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val bootstrapLink = Gear360ClassicBluetoothLink(
+        appContext,
+        object : Gear360ClassicBluetoothLink.Listener {
+            override fun onState(state: ClassicLinkState, detail: String) {
+                Log.i(TAG_SAM, "RFCOMM bootstrap state=$state $detail")
+                if (state == ClassicLinkState.CLASSIC_CONNECTED) {
+                    bootstrapConnected = true
+                    listener.onPhysicalTransportState("LEGACY_BOOTSTRAP_CONNECTED")
+                }
+            }
+
+            override fun onRx(data: ByteArray) {
+                Log.w(
+                    TAG_SAM,
+                    "Unexpected data on RFCOMM bootstrap len=${data.size}; " +
+                        "leaving SAP payload handling to com.samsung.accessory"
+                )
+            }
+
+            override fun onClosed(reason: String, error: Throwable?) {
+                bootstrapConnected = false
+                Log.w(TAG_SAM, "RFCOMM bootstrap closed: $reason", error)
+                if (!accessoryConnected && activeConnectDevice != null) {
+                    scheduleBootstrapRetry(reason)
+                }
+            }
+        }
+    )
 
     private val samListener = object : SamAccessoryManager.AccessoryEventListener {
         override fun onAccessoryConnected(device: SamDevice) {
             Log.i(TAG_SAM, "Accessory connected: $device")
             accessoryConnected = true
-            socketConnectAttempts = 0
+            cancelBootstrapCallbacks()
             listener.onPhysicalTransportState("CONNECTED")
             listener.onAccessoryConnected()
             connectBTMProviderService()
@@ -57,11 +99,8 @@ class LegacySamsungAccessoryTransport(
             val namedReason = "${managerResultName(reason)}($reason)"
             Log.w(TAG_SAM, "Accessory error device=$device reason=$namedReason")
             if (reason == SamAccessoryManager.ERROR_ACCESSORY_ALREADY_CONNECTED) {
-                accessoryConnected = true
-                listener.onPhysicalTransportState("CONNECTED")
-                listener.onAccessoryConnected()
-                connectBTMProviderService()
-            } else if (isRetryableSocketError(reason) && retryLegacyConnection(reason)) {
+                handleExistingAccessory(device)
+            } else if (isRetryableSocketError(reason) && startModernRfcommBootstrap(namedReason)) {
                 return
             } else {
                 listener.onError("Samsung Accessory error: $namedReason")
@@ -119,6 +158,8 @@ class LegacySamsungAccessoryTransport(
         }
 
         override fun onSapSocketConnected(name: String?, peer: String?, product: String?) {
+            cancelBootstrapCallbacks()
+            bootstrapLink.disconnect()
             listener.onSapSocketConnected(name, peer, product)
         }
 
@@ -147,13 +188,27 @@ class LegacySamsungAccessoryTransport(
 
         pendingConnectDevice = null
         activeConnectDevice = device
-        socketConnectAttempts = 0
-        startAccessoryConnection(device, manager, retryDelayMs = 0L)
+        bootstrapStarted = false
+        bootstrapConnected = false
+        bootstrapAttempts = 0
+
+        val connectedAccessory = findConnectedAccessory(manager, device)
+        if (connectedAccessory != null) {
+            Log.i(TAG_SAM, "Samsung Accessory already connected: $connectedAccessory")
+            handleExistingAccessory(connectedAccessory)
+            return
+        }
+
+        startAccessoryConnection(device, manager)
     }
 
     override fun disconnect(device: DeviceDescription?) {
         pendingConnectDevice = null
         activeConnectDevice = null
+        cancelBootstrapCallbacks()
+        bootstrapLink.disconnect()
+        bootstrapStarted = false
+        bootstrapConnected = false
         try {
             btmProviderService?.closeConnection()
         } catch (e: RuntimeException) {
@@ -187,6 +242,8 @@ class LegacySamsungAccessoryTransport(
     override fun release() {
         pendingConnectDevice = null
         activeConnectDevice = null
+        cancelBootstrapCallbacks()
+        bootstrapLink.release()
         try {
             btmProviderService?.releaseProvider()
         } catch (e: RuntimeException) {
@@ -290,19 +347,9 @@ class LegacySamsungAccessoryTransport(
 
     private fun startAccessoryConnection(
         device: DeviceDescription,
-        manager: SamAccessoryManager,
-        retryDelayMs: Long
+        manager: SamAccessoryManager
     ) {
         connectionWorker.execute {
-            if (retryDelayMs > 0) {
-                try {
-                    Thread.sleep(retryDelayMs)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return@execute
-                }
-            }
-
             val stillRequested = activeConnectDevice?.address == device.address &&
                 samAccessoryManager === manager
             if (!stillRequested) {
@@ -310,12 +357,11 @@ class LegacySamsungAccessoryTransport(
                 return@execute
             }
 
-            socketConnectAttempts += 1
             try {
                 Log.i(
                     TAG_SAM,
                     "Connecting via Samsung Accessory BT to ${device.name} " +
-                        "assistMode=DEFAULT attempt=$socketConnectAttempts/$MAX_SOCKET_CONNECT_ATTEMPTS"
+                        "assistMode=DEFAULT"
                 )
                 listener.onPhysicalTransportState("CONNECTING")
                 listener.onAccessoryConnecting()
@@ -326,7 +372,7 @@ class LegacySamsungAccessoryTransport(
                 )
             } catch (e: Exception) {
                 Log.e(TAG_SAM, "Failed to start Samsung Accessory connection", e)
-                if (!retryLegacyConnection(SamAccessoryManager.ERROR_SOCKET_CONNECT_FAILED)) {
+                if (!startModernRfcommBootstrap("Samsung manager connect threw ${e.javaClass.simpleName}")) {
                     listener.onError("Samsung Accessory connect failed", e)
                 }
             }
@@ -334,25 +380,127 @@ class LegacySamsungAccessoryTransport(
     }
 
     @Synchronized
-    private fun retryLegacyConnection(reason: Int): Boolean {
+    private fun startModernRfcommBootstrap(reason: String): Boolean {
         val device = activeConnectDevice ?: return false
-        val manager = samAccessoryManager ?: return false
-        if (socketConnectAttempts >= MAX_SOCKET_CONNECT_ATTEMPTS) {
-            Log.e(
-                TAG_SAM,
-                "Samsung Accessory socket retries exhausted " +
-                    "reason=${managerResultName(reason)}($reason) attempts=$socketConnectAttempts"
-            )
-            return false
+        if (bootstrapStarted) {
+            Log.i(TAG_SAM, "RFCOMM bootstrap already active; waiting for incoming Samsung session")
+            return true
         }
 
+        bootstrapStarted = true
+        bootstrapAttempts = 0
         Log.w(
             TAG_SAM,
-            "Samsung Accessory socket error=${managerResultName(reason)}($reason); " +
-                "scheduling retry ${socketConnectAttempts + 1}/$MAX_SOCKET_CONNECT_ATTEMPTS"
+            "Legacy RFCOMM API failed ($reason); opening Android RFCOMM bootstrap " +
+                "uuid=$GEAR360_OUTBOUND_RFCOMM_UUID and waiting for framework-owned return link"
         )
-        startAccessoryConnection(device, manager, SOCKET_RETRY_DELAY_MS)
+        listener.onPhysicalTransportState("LEGACY_BOOTSTRAP_CONNECTING")
+        scheduleBootstrapTimeout()
+        attemptModernRfcommBootstrap(device)
         return true
+    }
+
+    private fun attemptModernRfcommBootstrap(device: DeviceDescription) {
+        val bluetoothDevice: BluetoothDevice = try {
+            AndroidPermissionUtils.bluetoothAdapter(appContext)?.getRemoteDevice(device.address)
+        } catch (e: IllegalArgumentException) {
+            null
+        } ?: run {
+            Log.e(TAG_SAM, "Cannot resolve Bluetooth device ${device.address} for RFCOMM bootstrap")
+            return
+        }
+
+        bootstrapAttempts += 1
+        Log.i(
+            TAG_SAM,
+            "RFCOMM bootstrap attempt=$bootstrapAttempts/$LEGACY_BOOTSTRAP_MAX_ATTEMPTS " +
+                "uuid=$GEAR360_OUTBOUND_RFCOMM_UUID"
+        )
+        bootstrapLink.connect(bluetoothDevice, GEAR360_OUTBOUND_RFCOMM_UUID)
+    }
+
+    private fun scheduleBootstrapRetry(lastCloseReason: String) {
+        if (bootstrapAttempts >= LEGACY_BOOTSTRAP_MAX_ATTEMPTS) {
+            Log.w(
+                TAG_SAM,
+                "RFCOMM bootstrap attempts exhausted; keeping Samsung framework registered " +
+                    "until timeout. lastClose=$lastCloseReason"
+            )
+            return
+        }
+
+        bootstrapRetry?.let(mainHandler::removeCallbacks)
+        val runnable = Runnable {
+            bootstrapRetry = null
+            if (accessoryConnected) return@Runnable
+            val device = activeConnectDevice ?: return@Runnable
+            Log.i(TAG_SAM, "Retrying RFCOMM bootstrap after camera link transition")
+            attemptModernRfcommBootstrap(device)
+        }
+        bootstrapRetry = runnable
+        mainHandler.postDelayed(runnable, LEGACY_BOOTSTRAP_RETRY_DELAY_MS)
+    }
+
+    private fun handleExistingAccessory(device: SamDevice?) {
+        accessoryConnected = true
+        cancelBootstrapCallbacks()
+        Log.i(TAG_SAM, "Accessory transport confirmed by Samsung framework: $device")
+        listener.onPhysicalTransportState("CONNECTED")
+        listener.onAccessoryConnected()
+        connectBTMProviderService()
+    }
+
+    private fun findConnectedAccessory(
+        manager: SamAccessoryManager,
+        requested: DeviceDescription
+    ): SamDevice? {
+        return try {
+            manager.connectedAccessories
+                ?.firstOrNull {
+                    it.transportType == SA_TRANSPORT_TYPE &&
+                        it.address.equals(requested.address, ignoreCase = true)
+                }
+        } catch (e: RuntimeException) {
+            Log.w(TAG_SAM, "Unable to inspect existing Samsung Accessory connections", e)
+            null
+        }
+    }
+
+    private fun scheduleBootstrapTimeout() {
+        cancelBootstrapTimeout()
+        val runnable = Runnable {
+            if (accessoryConnected || activeConnectDevice == null) return@Runnable
+
+            val detail = if (bootstrapConnected) {
+                "Modern RFCOMM opened, but com.samsung.accessory did not accept the Gear 360 return link"
+            } else {
+                "Modern RFCOMM bootstrap did not connect to the Gear 360"
+            }
+            failBootstrap(detail, null)
+        }
+        bootstrapTimeout = runnable
+        mainHandler.postDelayed(runnable, LEGACY_BOOTSTRAP_TIMEOUT_MS)
+    }
+
+    @Synchronized
+    private fun failBootstrap(reason: String, error: Throwable?) {
+        if (activeConnectDevice == null) return
+        cancelBootstrapCallbacks()
+        bootstrapLink.disconnect()
+        activeConnectDevice = null
+        Log.e(TAG_SAM, reason, error)
+        listener.onError(reason, error)
+    }
+
+    private fun cancelBootstrapTimeout() {
+        bootstrapTimeout?.let(mainHandler::removeCallbacks)
+        bootstrapTimeout = null
+    }
+
+    private fun cancelBootstrapCallbacks() {
+        cancelBootstrapTimeout()
+        bootstrapRetry?.let(mainHandler::removeCallbacks)
+        bootstrapRetry = null
     }
 
     private fun isRetryableSocketError(reason: Int): Boolean {

@@ -36,7 +36,7 @@ class NativeGear360Transport(
     private val appContext = context.applicationContext
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val reconnectScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-    private val decoder = SapFrameDecoder()
+    private val decoder = SapFrameDecoder(detectPeerDescription = true)
     private val linkLock = Any()
     private var clientLink: Gear360ClassicBluetoothLink? = null
     private var serverLink: Gear360ClassicBluetoothServerLink? = null
@@ -216,6 +216,7 @@ class NativeGear360Transport(
             ),
             listener = object : NativeSapSession.Listener {
                 override fun onPhaseChanged(phase: SapHandshakePhase, detail: String) {
+                    if (phase == SapHandshakePhase.PROTOCOL_INIT) decoder.peerDescriptionEnabled = false
                     Log.i(TAG_SAP, "phase=$phase $detail")
                     listener.onNativeBluetoothDiagnostics("SAP $phase $detail")
                 }
@@ -295,7 +296,12 @@ class NativeGear360Transport(
         }
     }
 
+    @Synchronized
     private fun handleClassicRx(source: String, data: ByteArray) {
+        if (source != activeSource) {
+            Log.w(TAG_SAP_FRAME, "Ignoring bytes from inactive RFCOMM link=$source")
+            return
+        }
         Log.i(TAG_SAP_FRAME, "$source RX_RAW len=${data.size} HEX=${data.toHexString()}")
         listener.onNativeBluetoothDiagnostics(
             "$source RFCOMM RX len=${data.size} HEX=${data.toHexString(32)}"

@@ -70,7 +70,17 @@ class Gear360ClassicBluetoothServerLink(
                     val detail = describeRemote(remote, uuid)
                     Log.i(SERVER_TAG, "ACCEPTED $detail")
                     listener.onState(ClassicLinkState.CLASSIC_CONNECTED, detail)
-                    readLoop(acceptedSocket)
+                    try {
+                        readLoop(acceptedSocket)
+                    } catch (error: IOException) {
+                        if (running.get()) {
+                            Log.e(SERVER_TAG, "Accepted RFCOMM connection lost", error)
+                            listener.onClosed("Accepted RFCOMM connection lost: ${error.message}", error)
+                        }
+                    } finally {
+                        closeSocket(acceptedSocket)
+                        if (socket === acceptedSocket) socket = null
+                    }
                 } catch (e: SecurityException) {
                     if (running.get() && !accepted.get()) {
                         Log.e(SERVER_TAG, "Missing permission while listening RFCOMM", e)

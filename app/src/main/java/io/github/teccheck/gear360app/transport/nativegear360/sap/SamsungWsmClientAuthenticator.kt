@@ -22,28 +22,33 @@ class SamsungWsmClientAuthenticator(
     private val commonNative: CommonNative = CommonNative()
 ) : SapClientAuthenticator {
     private var handle: Long = 0
+    private var protocolVersion = 0
 
     override fun answerChallenge(clientChallenge: ByteArray): ByteArray {
         require(SapAccessoryAuthentication.isValidSecurityPacket(clientChallenge)) {
             "Malformed WSM client challenge"
         }
-        ensureInitialized()
-
-        val protocolVersion = runCatching { commonNative.getCurrentProtocolVersion() }
-            .onFailure { Log.w(TAG, "Unable to query WSM protocol version; using legacy response size", it) }
-            .getOrDefault(0)
-        val responseSize = if (protocolVersion == PROTOCOL_VERSION_EXTENDED) {
-            EXTENDED_SERVER_CHALLENGE_SIZE
-        } else {
-            LEGACY_SERVER_CHALLENGE_SIZE
-        }
+        val selected = WsmProtocol.forChallenge(clientChallenge)
+        ensureInitialized(selected.version)
+        val daemonReachable = runCatching { commonNative.isDaemonReachable() }
+            .onFailure { Log.w(TAG, "Unable to query the Samsung WSM daemon", it) }
+            .getOrNull()
+        Log.i(
+            TAG,
+            "WSM challenge processing protocol=$protocolVersion daemonReachable=${daemonReachable ?: "unknown"} requestLen=${clientChallenge.size}"
+        )
+        val responseSize = selected.responseSize
         val serverChallenge = ByteArray(responseSize)
         val result = clientNative.checkAndGenerateServerChallenge(
             handle,
             clientChallenge,
             serverChallenge
         )
-        check(result <= 0) { "WSM challenge failed code=$result" }
+        Log.i(
+            TAG,
+            "WSM native challenge result=$result responseHeader=${serverChallenge.take(3).joinToString(" ") { "%02X".format(it) }}"
+        )
+        WsmProtocol.requireSuccess(result, "challenge")
         check(SapAccessoryAuthentication.isValidSecurityPacket(serverChallenge)) {
             "WSM generated invalid challenge length=${serverChallenge.getOrNull(2)?.toInt()?.and(0xff)} expected=$responseSize"
         }
@@ -56,10 +61,12 @@ class SamsungWsmClientAuthenticator(
             "Malformed WSM confirmation"
         }
         check(handle > 0) { "WSM confirmation received before challenge" }
+        require(clientResponse.size == WsmProtocol.forVersion(protocolVersion).confirmationSize) {
+            "Unexpected WSM confirmation length=${clientResponse.size} version=$protocolVersion"
+        }
 
         val result = clientNative.checkClientResponse(handle, clientResponse)
-        check(result <= 0) { "WSM confirmation failed code=$result" }
-        check(result != AUTHENTICATION_FAILED) { "WSM confirmation HMAC mismatch" }
+        WsmProtocol.requireSuccess(result, "confirmation")
         Log.i(TAG, "WSM authentication confirmed")
     }
 
@@ -71,18 +78,19 @@ class SamsungWsmClientAuthenticator(
             .onFailure { Log.w(TAG, "WSM destroy failed", it) }
     }
 
-    private fun ensureInitialized() {
-        if (handle > 0) return
+    private fun ensureInitialized(version: Int) {
+        if (handle > 0) {
+            check(protocolVersion == version) { "WSM protocol changed during authentication" }
+            return
+        }
+        check(commonNative.setProtocolVersion(version) == version) {
+            "WSM protocol version $version could not be selected"
+        }
+        protocolVersion = version
         val created = clientNative.init(serverId, clientId)
         check(created > 0) { "WSM client initialization failed code=$created" }
         handle = created
         Log.i(TAG, "WSM client initialized for authenticated Bluetooth peers")
     }
 
-    private companion object {
-        const val PROTOCOL_VERSION_EXTENDED = 1
-        const val LEGACY_SERVER_CHALLENGE_SIZE = 102
-        const val EXTENDED_SERVER_CHALLENGE_SIZE = 200
-        const val AUTHENTICATION_FAILED = -1
-    }
 }

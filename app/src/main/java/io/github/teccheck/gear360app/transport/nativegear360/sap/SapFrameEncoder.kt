@@ -42,8 +42,8 @@ class SapFrameEncoder(
         payload: ByteArray,
         crcMode: SapTransportCrcMode = defaultCrcMode
     ): ByteArray {
-        requireNotNull(SapAccessoryAuthentication.parse(payload)) {
-            "Invalid Samsung Accessory authentication device packet"
+        require(SapAccessoryAuthentication.parse(payload) != null || SapPeerDescription.isLegacyDevicePacket(payload)) {
+            "Invalid Samsung Accessory device packet"
         }
         return encodeTransportPayload(payload, crcMode)
     }

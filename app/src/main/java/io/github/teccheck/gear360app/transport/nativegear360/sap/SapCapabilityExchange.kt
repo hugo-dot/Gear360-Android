@@ -1,15 +1,27 @@
 package io.github.teccheck.gear360app.transport.nativegear360.sap
 
 import java.nio.charset.StandardCharsets
+import java.util.zip.CRC32
 
 object SapCapabilityExchange {
+    const val SERVICE_PROFILE = "/System/Reserved/ServiceCapabilityDiscovery"
+    const val LEGACY_CHANNEL_ID = 255
+    const val LOCAL_LEGACY_SESSION_ID = 1
+
+    fun composeServiceRequest(): ByteArray = SapServiceConnection.composeRequest(
+        acceptorId = 0xffff,
+        initiatorId = 0xffff,
+        profileId = SERVICE_PROFILE,
+        channels = listOf(ServiceChannelRecord(LEGACY_CHANNEL_ID, LOCAL_LEGACY_SESSION_ID, QosRecord(1, 1, 3), 3))
+    )
     const val MESSAGE_TYPE_QUERY = 1
     const val MESSAGE_TYPE_RESPONSE = 2
     const val MESSAGE_TYPE_LEGACY_QUERY = 5
     const val MESSAGE_TYPE_LEGACY_RESPONSE = 6
     private const val LEGACY_SERVICE_UUID = 1
     private const val LEGACY_COMPONENT_ID = 1
-    private const val LEGACY_ASP_VERSION = 0x0201
+    // Application service profile version, independent of SAP transport version 2.1.
+    private const val LEGACY_ASP_VERSION = 0x0100
     private const val LEGACY_ROLE_PROVIDER = 1
     private const val LEGACY_AGENT_COUNT = 1
     private const val LEGACY_QUERY_PERSISTENCE_MINUTES = 1440
@@ -112,12 +124,13 @@ object SapCapabilityExchange {
 
     /**
      * Wire layout from SACapexFrameUtils.composeCapabilityDiscoveryResponseMessage().
-     * A sync response omits the checksum and carries a two-byte ALE record count.
+     * Matching and sync responses include the registry checksum; ALL omits it.
      */
     fun composeResponse(
         queryPayload: ByteArray,
         profileId: String = SapHandshake.PROFILE_ID,
-        friendlyName: String = "DI_360_2DApp"
+        friendlyName: String = "DI_360_2DApp",
+        registryChecksum: Int? = null
     ): ByteArray {
         require(queryPayload.size >= 2 && (queryPayload[0].toInt() and 0xff) == MESSAGE_TYPE_QUERY) {
             "not a normal CAPEX query"
@@ -129,7 +142,7 @@ object SapCapabilityExchange {
         val profile = SapProfileIdCodec.encode(profileId)
         val encodedFriendlyName = friendlyName.toByteArray(StandardCharsets.UTF_8)
         val friendlyBytes = encodedFriendlyName.copyOf(minOf(encodedFriendlyName.size, 30))
-        val checksumBytes = if (queryType == QUERY_TYPE_SYNC) 0 else 4
+        val checksumBytes = if (queryType == QUERY_TYPE_ALL) 0 else 4
         val headerSize = 2 + checksumBytes + 2
         val out = ByteArray(
             headerSize +
@@ -140,9 +153,7 @@ object SapCapabilityExchange {
         var offset = 0
         out[offset++] = MESSAGE_TYPE_RESPONSE.toByte()
         out[offset++] = queryType.toByte()
-        if (queryType != QUERY_TYPE_SYNC) {
-            val checksum = readQueryChecksum(queryPayload)
-            writeUInt32(checksum, out, offset)
+        if (checksumBytes != 0) {
             offset += 4
         }
         SapCrc.writeUInt16(1, out, offset)
@@ -164,15 +175,15 @@ object SapCapabilityExchange {
         offset += 2
         out[offset++] = LEGACY_ROLE_PROVIDER.toByte()
         SapCrc.writeUInt16(NORMAL_CONNECTION_TIMEOUT_SECONDS, out, offset)
+        if (checksumBytes != 0) {
+            // Opaque registry change token, not the RFCOMM frame checksum. Never
+            // echo the peer's cached checksum as if it described our registry.
+            val checksum = registryChecksum ?: CRC32().apply {
+                update(out, headerSize, out.size - headerSize)
+            }.value.toInt()
+            writeUInt32(checksum, out, 2)
+        }
         return out
-    }
-
-    private fun readQueryChecksum(queryPayload: ByteArray): Int {
-        if (queryPayload.size < 6) return 0
-        return ((queryPayload[2].toInt() and 0xff) shl 24) or
-            ((queryPayload[3].toInt() and 0xff) shl 16) or
-            ((queryPayload[4].toInt() and 0xff) shl 8) or
-            (queryPayload[5].toInt() and 0xff)
     }
 
     private fun describeNormalQuery(payload: ByteArray): String {

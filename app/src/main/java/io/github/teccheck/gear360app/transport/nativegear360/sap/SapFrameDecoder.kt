@@ -3,9 +3,11 @@ package io.github.teccheck.gear360app.transport.nativegear360.sap
 import io.github.teccheck.gear360app.transport.nativegear360.toHexString
 
 class SapFrameDecoder(
-    private val maxPayloadLength: Int = SapProtocol.MAX_BT_PAYLOAD_LENGTH
+    private val maxPayloadLength: Int = SapProtocol.MAX_BT_PAYLOAD_LENGTH,
+    private val detectPeerDescription: Boolean = false
 ) {
     private var buffer = ByteArray(0)
+    var peerDescriptionEnabled = detectPeerDescription
 
     fun append(data: ByteArray): SapDecodeResult {
         if (data.isEmpty()) return SapDecodeResult.NeedMoreData
@@ -52,7 +54,8 @@ class SapFrameDecoder(
                 SapTransportCrcMode.DISABLED
             }
             val authentication = SapAccessoryAuthentication.parse(sapPayload)
-            if (authentication != null) {
+            if (authentication != null ||
+                (peerDescriptionEnabled && SapPeerDescription.isLegacyDevicePacket(sapPayload))) {
                 frames += SapFrame(
                     channel = DEVICE_CHANNEL,
                     sessionId = DEVICE_CHANNEL,
@@ -83,6 +86,7 @@ class SapFrameDecoder(
 
     fun reset() {
         buffer = ByteArray(0)
+        peerDescriptionEnabled = detectPeerDescription
     }
 
     private fun hasValidLengthCrc(payloadLength: Int): Boolean {
