@@ -22,7 +22,7 @@ object SapCapabilityExchange {
     private const val LEGACY_COMPONENT_ID = 1
     // Application service profile version, independent of SAP transport version 2.1.
     private const val LEGACY_ASP_VERSION = 0x0100
-    private const val LEGACY_ROLE_PROVIDER = 1
+    private const val LEGACY_ROLE_PROVIDER = 0
     private const val LEGACY_AGENT_COUNT = 1
     private const val LEGACY_QUERY_PERSISTENCE_MINUTES = 1440
     private const val NORMAL_ALE_UUID = 1
@@ -34,23 +34,22 @@ object SapCapabilityExchange {
     const val UNKNOWN_CHECKSUM = -1
 
     /**
-     * Reproduces the initial query built by
-     * SACapabilityManager.sendCapexSyncQueryMessage(). Samsung sends message type 1,
-     * query type 3 followed by the profile count and persistent profile filters.
-     * Unlike query types 1 and 2, the sync layout does not carry a checksum.
+     * SACapexFrameUtils.composeCapabilityDiscoveryQueryMessage(): MATCHING and
+     * SYNC include a big-endian checksum before the filter count (offset 6).
      */
     fun composeSyncQuery(
         profileIds: List<String> = listOf(SapHandshake.PROFILE_ID),
-        @Suppress("UNUSED_PARAMETER") checksum: Int = UNKNOWN_CHECKSUM
+        checksum: Int = UNKNOWN_CHECKSUM
     ): ByteArray {
         require(profileIds.size <= 0xff) { "too many CAPEX profiles: ${profileIds.size}" }
         val encodedProfiles = profileIds.map(SapProfileIdCodec::encode)
-        val out = ByteArray(3 + encodedProfiles.sumOf(ByteArray::size))
+        val out = ByteArray(7 + encodedProfiles.sumOf(ByteArray::size))
         out[0] = MESSAGE_TYPE_QUERY.toByte()
         out[1] = QUERY_TYPE_SYNC.toByte()
-        out[2] = profileIds.size.toByte()
+        writeUInt32(checksum, out, 2)
+        out[6] = profileIds.size.toByte()
 
-        var offset = 3
+        var offset = 7
         encodedProfiles.forEach { profile ->
             profile.copyInto(out, offset)
             offset += profile.size

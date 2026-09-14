@@ -109,7 +109,7 @@ then:
 Reserved sessions:
 
 ```text
-1020 = CAPEX
+1020 = CAPEX reserve a partir de SAP 3.3, PAS pour la SM-R210 en SAP 2.1
 1023 = service connection
 ```
 
@@ -140,11 +140,27 @@ La reponse legacy annonce maintenant un record complet:
 /system/DI_360_2D
 friendlyName = DI_360_2DApp
 agentCount = 1
-aspVersion = 0x0201
-role = provider
+aspVersion = 0x0100 (profil 1.0)
+role = provider = 0 (consumer = 1)
 ```
 
-La requete CAPEX Sync moderne est emise sous la forme `01 03 count profiles`, sans checksum, sur la session reservee 1020 pour un accessoire ancien. Une requete CAPEX moderne recue est detectee mais sa reponse n'est pas encore produite sans trace physique de la camera.
+Sur la SM-R210 observee, il faut d'abord creer `/System/Reserved/ServiceCapabilityDiscovery`
+sur la session de controle 1023: identifiants 65535, canal 255, session locale 1.
+La camera a accepte ce service avec statut 0. La session 1 porte ensuite CAPEX.
+
+La requete Sync est `01 03 checksum32 count profiles`. Le checksum est BE aux
+offsets 2..5, le compteur a l'offset 6. L'ancien encodeur omettait ces quatre
+octets; correction le 14 septembre apres verification du serialiseur Samsung.
+Les requetes MATCHING
+recues de la camera commencent par `01 02 checksum32 count profiles`.
+Les reponses MATCHING et SYNC contiennent un checksum32 puis un compteur ALE16;
+la reponse ALL contient directement le compteur ALE16. Le checksum annonce par
+notre registre est un jeton CRC32 stable des records locaux, pas une copie du
+checksum en cache recu du pair. Il est distinct du CRC16 de transport.
+
+Le parseur des reponses valide les bornes, les compteurs et les terminateurs,
+puis expose componentId, profileId, role, version et nom. Aucun identifiant du
+service distant n'est invente ni deduit du numero du canal 204.
 
 ## Service profile Gear 360
 
@@ -158,17 +174,34 @@ transport: TRANSPORT_BT
 channels: 204, 222, 230
 ```
 
-La requete de service connection est parsee depuis la session reservee 1023.
+Le telephone initie une demande unique sur la session reservee 1023 apres une
+reponse CAPEX contenant un consumer `/system/DI_360_2D` unique. Cette sequence
+est confirmee dans le Manager officiel, contrairement a l'hypothese d'un
+provider necessairement passif. Le chemin entrant reste disponible si aucune
+demande sortante n'est en cours.
 
 Une fois acceptee, la reponse conserve le profile id termine par `;` et chaque channel logique est mappe vers son session id negocie:
 
 ```text
-channel 204 -> sessionId camera-provided
-channel 222 -> sessionId camera-provided
-channel 230 -> sessionId camera-provided
+channel 204 -> session 2 proposee (QoS 4,0,2, payloadType 0)
+channel 222 -> session 3 proposee (QoS 4,0,0, payloadType 0)
+channel 230 -> session 4 proposee (QoS 4,0,0, payloadType 0)
 ```
 
-`MessageSender` n'envoie sur 204 que lorsque ce mapping existe.
+Ces identifiants sont proposes, pas declares ouverts localement: le mapping
+n'est active que lorsque la reponse accepte le meme profil, les memes
+componentIds et la meme liste de sessions. Leur acceptation par la vraie camera
+reste a valider. Les gardes de timeout/deconnexion interdisent les envois tardifs.
+
+Les valeurs QoS viennent de `SAServiceDescriptionParser`: reliability disable=4,
+dataRate low=0; priority high=2 et low=0 sont copies dans classType. Le constructeur
+de ChannelRecord laisse payloadType a 0. Ces canaux ne demandent pas la fiabilite
+SAP avec numeros de sequence (QoS 5).
+
+`MessageSender` n'envoie sur 204 que lorsque ce mapping existe et la session est ouverte.
+
+Les traces et limites de validation sont dans `docs/protocol/a05-control-20260911.md`
+et `DIAGNOSTIC.md`. Le backend natif conserve une dependance binaire WSM Samsung.
 
 ## Conditions READY
 

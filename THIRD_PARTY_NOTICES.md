@@ -10,3 +10,12 @@ backend. They do not contain or install the external Samsung Accessory Service p
 
 Reference Samsung APKs and decompiled material are intentionally excluded from this Git
 repository. Only clean-room protocol findings are documented under `docs/`.
+
+The native-control experiment also uses the Samsung WSM binary libraries in
+`app/src/main/jniLibs/arm64-v8a/` and their JNI interface. The successful A05 WSM
+authentication still relies on these binaries; the project is not yet an entirely
+independent implementation. Their presence does not bundle the external Accessory
+Service Android package. The additional TrustZone probe and supporting libraries
+already in the debug tree are diagnostic experiments, not the validated WSM path.
+Binary redistribution remains subject to the applicable Samsung terms; no new
+license to those components is granted by this project's source license.

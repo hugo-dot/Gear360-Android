@@ -1,10 +1,6 @@
 package io.github.teccheck.gear360app.transport.nativegear360.sap
 
-import android.util.Log
 import io.github.teccheck.gear360app.transport.nativegear360.toHexString
-
-private const val TAG_SAP = "G360-SAP"
-private const val TAG_CH204 = "G360-CH204"
 
 class NativeSapSession(
     private val writer: (ByteArray) -> Boolean,
@@ -29,8 +25,17 @@ class NativeSapSession(
     private var negotiatedCrcMode = SapTransportCrcMode.DISABLED
     private var capexSessionId = SapProtocol.SESSION_ID_CAPEX
     private var capexServicePending = false
+    private var gearServicePending: ServiceConnectionRequest? = null
+    private var capexReady = false
 
-    fun onRfcommConnected() {
+    @Synchronized fun onRfcommConnected() {
+        state = SapSessionState.HANDSHAKING
+        mux.clear()
+        gearServicePending = null
+        capexReady = false
+        authenticator?.close()
+        authenticator = null
+        crcMode = SapTransportCrcMode.DISABLED
         legacyDescriptionAnswered = false
         negotiatedCrcMode = SapTransportCrcMode.DISABLED
         capexServicePending = false
@@ -44,7 +49,8 @@ class NativeSapSession(
         )
     }
 
-    fun handleFrame(frame: SapFrame): List<SapPayload> {
+    @Synchronized fun handleFrame(frame: SapFrame): List<SapPayload> {
+        if (state == SapSessionState.CLOSED || state == SapSessionState.ERROR) return emptyList()
         keepAlive.markRx(System.currentTimeMillis())
         crcMode = frame.transportCrcMode
         listener.onFrameRx(frame)
@@ -90,7 +96,7 @@ class NativeSapSession(
                     emptyList()
                 } else {
                     if (payload.channel == 204) {
-                        Log.i(TAG_CH204, "RX 204 len=${payload.payload.size}")
+                        listener.onProtocolEvent("RX 204 len=${payload.payload.size}")
                     }
                     listener.onChannelPayload(payload.channel, frame.sessionId, payload.payload.size)
                     listOf(payload)
@@ -105,7 +111,8 @@ class NativeSapSession(
         return mux.isOpen(channel)
     }
 
-    override fun send(channel: Int, payload: ByteArray): Boolean {
+    @Synchronized override fun send(channel: Int, payload: ByteArray): Boolean {
+        if (state != SapSessionState.READY) return false
         val sessionId = mux.sessionForChannel(channel)
         if (sessionId == null) {
             listener.onProtocolEvent("TX refused channel=$channel; channel is not negotiated")
@@ -121,7 +128,7 @@ class NativeSapSession(
         if (written) {
             keepAlive.markTx(System.currentTimeMillis())
             if (channel == 204) {
-                Log.i(TAG_CH204, "TX 204 session=$sessionId len=${payload.size}")
+                listener.onProtocolEvent("TX 204 session=$sessionId len=${payload.size}")
             }
             listener.onFrameTx(channel, sessionId, encoded.size)
         } else {
@@ -130,13 +137,27 @@ class NativeSapSession(
         return written
     }
 
-    override fun close() {
+    @Synchronized override fun close() {
         state = SapSessionState.CLOSED
         phase = SapHandshakePhase.RFCOMM_CONNECTED
         peerDescriptionSessionId = null
         waitingForPeerConfirm = false
+        gearServicePending = null
+        capexReady = false
+        mux.clear()
         authenticator?.close()
         authenticator = null
+    }
+
+    @Synchronized fun onHandshakeTimeout(
+        reason: String = "SAP negotiation timeout at $phase; channel 204 is not open"
+    ) {
+        if (state == SapSessionState.READY || state == SapSessionState.CLOSED || state == SapSessionState.ERROR) return
+        state = SapSessionState.ERROR
+        mux.clear()
+        authenticator?.close()
+        authenticator = null
+        listener.onProtocolError(reason)
     }
 
     private fun handleAuthentication(frame: SapFrame) {
@@ -347,6 +368,7 @@ class NativeSapSession(
             return
         }
         val query = SapCapabilityExchange.composeSyncQuery()
+        capexReady = true
         val wire = encoder.encodeData(
             sessionId = SapProtocol.SESSION_ID_CAPEX,
             payload = query,
@@ -371,7 +393,7 @@ class NativeSapSession(
     }
 
     private fun handleCapabilityExchange(frame: SapFrame) {
-        phase = SapHandshakePhase.CAPABILITY_EXCHANGE
+        if (gearServicePending == null && !mux.isOpen(204)) phase = SapHandshakePhase.CAPABILITY_EXCHANGE
         val description = SapCapabilityExchange.describe(frame.payload)
         listener.onCapex(description)
 
@@ -418,15 +440,57 @@ class NativeSapSession(
                 }
             }
 
-            SapCapabilityExchange.MESSAGE_TYPE_RESPONSE ->
-                listener.onProtocolEvent("normal CAPEX response received; waiting for service connection")
-
-            SapCapabilityExchange.MESSAGE_TYPE_LEGACY_RESPONSE ->
-                listener.onProtocolEvent("legacy CAPEX response received; waiting for service connection")
+            SapCapabilityExchange.MESSAGE_TYPE_RESPONSE,
+            SapCapabilityExchange.MESSAGE_TYPE_LEGACY_RESPONSE -> handlePeerServices(frame.payload)
 
             else -> {
                 listener.onProtocolEvent("CAPEX message observed without response: $description")
             }
+        }
+    }
+
+    private fun handlePeerServices(payload: ByteArray) {
+        if (!capexReady) {
+            listener.onProtocolEvent("Ignoring CAPEX response before capability service establishment")
+            return
+        }
+        val services = try {
+            SapCapabilityResponse.parse(payload)
+        } catch (error: IllegalArgumentException) {
+            state = SapSessionState.ERROR
+            listener.onProtocolError("Invalid CAPEX response: ${error.message}")
+            return
+        }
+        services.forEach {
+            listener.onProtocolEvent("CAPEX peer profile=${it.profileId} component=${it.componentId} role=${it.role} version=0x%04X".format(it.profileVersion))
+        }
+        if (gearServicePending != null || mux.isOpen(204)) return
+        val peer = services.singleOrNull {
+            it.profileId == SapHandshake.PROFILE_ID && it.role == 1 && it.componentId != 0xffff
+        }
+        if (peer == null) {
+            listener.onProtocolEvent("CAPEX has no unique Gear360 consumer; awaiting matching profile response")
+            return
+        }
+        // Official Gear360 Manager: onPeerFound -> establishConnection -> requestServiceConnection.
+        // SAServiceDescriptionParser maps reliability=disable to 4 and priority to classType.
+        val channels = listOf(
+            ServiceChannelRecord(204, 2, QosRecord(4, 0, 2), 0),
+            ServiceChannelRecord(222, 3, QosRecord(4, 0, 0), 0),
+            ServiceChannelRecord(230, 4, QosRecord(4, 0, 0), 0)
+        )
+        val request = ServiceConnectionRequest(peer.componentId, 1, peer.profileId,
+            channels.map { it.sessionId }, channels)
+        gearServicePending = request
+        phase = SapHandshakePhase.SERVICE_CONNECTION
+        listener.onServiceConnectionRequest(request)
+        listener.onPhaseChanged(phase, "Requesting Gear360 service component=${peer.componentId}")
+        val wire = encoder.encodeData(SapProtocol.SESSION_ID_SERVICE_CONNECTION,
+            SapServiceConnection.composeRequest(request.acceptorId, request.initiatorId,
+                request.profileId, request.channels), crcMode = crcMode)
+        if (!writer(wire)) {
+            state = SapSessionState.ERROR
+            listener.onProtocolError("Gear360 service request write failed")
         }
     }
 
@@ -435,6 +499,14 @@ class NativeSapSession(
         val request = SapServiceConnection.parseRequest(frame.payload)
         if (request != null) {
             listener.onServiceConnectionRequest(request)
+            if (!capexReady) {
+                listener.onProtocolEvent("Ignoring service request before authenticated CAPEX establishment")
+                return
+            }
+            if (gearServicePending != null || mux.isOpen(204)) {
+                listener.onProtocolEvent("Ignoring competing incoming service request while our session is pending/open")
+                return
+            }
             if (request.profileId != SapHandshake.PROFILE_ID) {
                 state = SapSessionState.ERROR
                 listener.onProtocolError(
@@ -468,7 +540,7 @@ class NativeSapSession(
             if (mux.isOpen(204)) {
                 state = SapSessionState.READY
                 phase = SapHandshakePhase.CHANNEL_204_OPEN
-                Log.i(TAG_SAP, "SAP READY: channel 204 open")
+                listener.onProtocolEvent("SAP READY: channel 204 open")
                 listener.onChannel204Open()
             } else {
                 state = SapSessionState.ERROR
@@ -482,6 +554,22 @@ class NativeSapSession(
             listener.onProtocolEvent(
                 "service connection response status=${response.statusCode} profile=${response.profileId} sessions=${response.sessionIds}"
             )
+            val pending = gearServicePending
+            if (pending != null && response.profileId == pending.profileId) {
+                if (response.acceptorId != pending.acceptorId || response.initiatorId != pending.initiatorId ||
+                    response.sessionIds != pending.sessionIds || response.statusCode != SapServiceConnection.STATUS_ACCEPTED) {
+                    state = SapSessionState.ERROR
+                    listener.onProtocolError("Gear360 service rejected or response mismatched: $response")
+                    return
+                }
+                gearServicePending = null
+                listener.onChannelsOpen(mux.bind(pending))
+                state = SapSessionState.READY
+                phase = SapHandshakePhase.CHANNEL_204_OPEN
+                listener.onPhaseChanged(phase, "Gear360 accepted SAP sessions=${response.sessionIds}")
+                listener.onChannel204Open()
+                return
+            }
             if (capexServicePending && response.profileId == SapCapabilityExchange.SERVICE_PROFILE) {
                 if (response.statusCode != SapServiceConnection.STATUS_ACCEPTED ||
                     response.acceptorId != 0xffff || response.initiatorId != 0xffff ||
@@ -490,6 +578,7 @@ class NativeSapSession(
                     return
                 }
                 capexServicePending = false
+                capexReady = true
                 capexSessionId = response.sessionIds.single()
                 val wire = encoder.encodeData(capexSessionId, SapCapabilityExchange.composeSyncQuery(), crcMode = crcMode)
                 if (!writer(wire)) {

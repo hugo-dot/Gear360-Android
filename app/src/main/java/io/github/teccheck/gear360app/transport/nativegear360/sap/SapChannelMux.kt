@@ -4,6 +4,11 @@ class SapChannelMux {
     private val channels = mutableMapOf<Int, SapChannel>()
     private val channelBySession = mutableMapOf<Int, Int>()
 
+    fun clear() {
+        channels.clear()
+        channelBySession.clear()
+    }
+
     fun markOpening(channel: Int) {
         val previous = channels[channel]
         channels[channel] = SapChannel(

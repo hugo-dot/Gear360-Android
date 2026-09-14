@@ -29,7 +29,7 @@ class Gear360ClassicBluetoothServerLink(
     @Volatile private var socket: BluetoothSocket? = null
 
     @SuppressLint("MissingPermission")
-    fun listen(uuids: List<UUID>) {
+    fun listen(uuids: List<UUID>, expectedAddress: String) {
         if (!running.compareAndSet(false, true)) {
             Log.w(SERVER_TAG, "server listen ignored; RFCOMM server already running")
             return
@@ -52,7 +52,13 @@ class Gear360ClassicBluetoothServerLink(
                         uuid
                     )
                     serverSockets += serverSocket
-                    val acceptedSocket = serverSocket.accept()
+                    var candidate = serverSocket.accept()
+                    while (running.get() && !candidate.remoteDevice.address.equals(expectedAddress, ignoreCase = true)) {
+                        Log.w(SERVER_TAG, "Rejected inbound RFCOMM from a device other than the selected camera")
+                        closeSocket(candidate)
+                        candidate = serverSocket.accept()
+                    }
+                    val acceptedSocket = candidate
                     if (!running.get()) {
                         closeSocket(acceptedSocket)
                         return@execute

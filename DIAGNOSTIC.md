@@ -1,166 +1,128 @@
-# Gear360 Android Diagnostic
+# Gear360: diagnostic du controle Bluetooth
 
-Date: 2026-09-09
+Mise a jour: 2026-09-14. **Application non validee fonctionnelle.**
 
-## Cause du blocage observe
+## Resultat reel
 
-La version precedente pouvait appairer le telephone et parfois connecter le Wi-Fi de la Gear 360, mais elle ne creait pas une vraie session de controle camera.
+Les essais du 10/11 septembre sur Galaxy A05 SM-A055F, Android 15/API 35,
+avec la SM-R210 ont atteint:
 
-Le blocage etait sous le protocole JSON Gear360:
+1. Connexion RFCOMM entrante de la camera.
+2. Peer Description 2.1 et reponse acceptee.
+3. Authentification WSM confirmee par la camera.
+4. Activation du CRC de transport.
+5. Creation du service `/System/Reserved/ServiceCapabilityDiscovery`,
+   acceptee avec statut 0 et session 1.
+6. Requetes CAPEX de la camera, dont `/system/DI_360_2D`.
 
-- `SapFrameDecoder.append()` ne decodait aucune frame utile et retournait `UnknownFraming`.
-- `SapFrameEncoder.encode()` levait `UnsupportedOperationException`.
-- `SapHandshake` indiquait que le handshake etait inconnu.
-- `NativeGear360Transport.send()` retournait toujours `false`.
+**Aucun canal 204, JSON Gear360, config-info, PHOTO ou VIDEO n'a encore ete
+valide physiquement.** Le dernier blocage observe est la creation du service
+de controle apres CAPEX, pas le pairing Android.
 
-Donc PHOTO / RECORD / RECORD_STOP ne pouvaient pas physiquement sortir sur le canal logique Samsung Accessory 204.
+## Causes et corrections
 
-## Corrections appliquees
+- WSM: protocole selectionne avant initialisation, bonnes tailles de paquets
+  et bon sens du code de retour. Le chemin logiciel a fonctionne sur l'A05;
+  le daemon TrustZone explore auparavant n'est pas necessaire a cet essai.
+- Peer Description 2.1: paquets device bruts 5/6, pas session SAP 320.
+- CRC: active apres authentification lorsque negocie. La camera a accepte
+  les trames produites et ses reponses ont passe la verification CRC.
+- CAPEX 2.1: ouverture du service reserve sur le canal 255 avant les requetes;
+  la session reservee 1020 appartient aux versions de protocole plus recentes.
+- Annonce du service: version applicative 1.0 (`0x0100`), pas version du
+  transport 2.1. Reponses MATCHING/SYNC avec checksum; ALL sans checksum.
+- **Role corrige: provider=0, consumer=1.** Verification dans
+  `SAServiceDescriptionParser`; notre annonce native avait inverse le role.
+- Connexion active native: parsing borne de la reponse CAPEX, selection d'un
+  consumer Gear360 unique, demande avec son componentId reel. Une seule
+  demande est emise. Le code officiel du Manager confirme ce sens.
+- Le mux n'ouvre les canaux qu'apres acceptation correspondant exactement au
+  profil, aux identifiants et aux sessions demandes. Une reponse tardive apres
+  timeout/deconnexion ne peut pas remettre READY.
+- Timeout de negociation de 30 secondes, precisant la phase atteinte.
+- La socket entrante n'accepte que l'adresse de la camera selectionnee.
+- Une perte RFCOMM ferme la session et interdit les envois suivants.
 
-- Ajout d'un parseur incremental SAP longueur/payload, avec support CRC optionnel.
-- Ajout d'un encodeur SAP qui produit des frames longueur + payload SAP.
-- Ajout d'un CRC Samsung observe: CRC-16/IBM, init 0, octets wire en big-endian.
-- Ajout d'une session native `NativeSapSession`.
-- Ajout d'un multiplexeur channel logique -> session SAP, necessaire pour router le canal 204.
-- Ajout d'une reponse CAPEX legacy minimale pour annoncer `/system/DI_360_2D`.
-- Correction de la reponse CAPEX legacy: elle suit maintenant la structure observee dans `SACapexFrameUtils` (`messageType`, compteur 32 bits, uuid, friendly name, agent count, component id, profile id, ASP version, role).
-- Correction critique du codage `profileId`: `/system/DI_360_2D` est une chaine Samsung terminee par `;`; seuls les identifiants commencant par `=` utilisent le champ fixe de 17 octets.
-- Correction de la requete CAPEX Sync: retrait du checksum absent de ce message et ajout du terminateur `;` du profile.
-- Ajout de l'acceptation d'une requete de service connection Gear360 et ouverture logique des channels negocies.
-- Correction de la reponse service connection: le `profileId` accepte reprend le format variable termine par `;` attendu pour `/system/DI_360_2D`.
-- Ajout de l'ecriture RFCOMM thread-safe.
-- Ajout d'un listener RFCOMM serveur en plus du client sortant, car Samsung Accessory expose les deux chemins.
-- Correction du scanner: l'ecran de detection lance maintenant une decouverte Bluetooth Classic (`BluetoothAdapter.startDiscovery()`) en plus du scan BLE. La SM-R210/SAP ne doit pas dependre d'un scan BLE uniquement.
-- Stabilisation du cycle de vie du scanner: la decouverte Classic n'est plus annulee immediatement par `onPause()` pendant la transition `StartActivity -> ScanActivity`.
-- Ajout d'une relance automatique de la decouverte Classic tant que l'ecran de scan est actif.
-- Changement du mode `AUTO`: si le framework externe `com.samsung.accessory` est installe, l'application choisit `SAMSUNG LEGACY`; sinon elle choisit le backend natif experimental.
-- Alignement du backend Legacy sur l'APK Gear 360 1.5.00.1: `SamAccessoryManager.connect(address, TRANSPORT_BT, ASSISTMODE_DEFAULT)` est appele directement, sans pre-scan SDP impose par notre application.
-- Alignement de la connexion de service SAP sur l'APK officiel: apres `PEER_AGENT_FOUND`, le Provider appelle `requestServiceConnection(peer)`; le chemin entrant `onServiceConnectionRequested()` reste accepte en parallele.
-- Ajout d'un watchdog borne sur la connexion de service SAP afin qu'une reponse `CONNECTION_DUPLICATE_REQUEST` ou une absence de callback ne laisse plus l'application bloquee indefiniment.
-- Separation entre fermeture du `SASocket` et liberation de l'agent Samsung: une deconnexion utilisateur n'empeche plus une reconnexion dans la meme execution du service.
-- Conservation du protocole JSON existant `BTMessage`, `MessageSender`, `MessageHandler`.
-- Conservation du verrou UI: PHOTO/VIDEO restent bloques tant que `config-info` n'est pas recu.
-- Projet Gradle remis a plat: module Android dans `app/`, module Gradle `:app`, nom du projet `Gear360-Android`.
-- Correction des gardes API pour Android 5-10 (`BluetoothDevice.alias`, `WifiNetworkSpecifier`).
-- Les JAR Samsung requis par le backend legacy sont inclus dans le depot afin qu'un clone neuf puisse compiler.
+## Validation de cette reprise
 
-## Etat actuel
+Le 14 septembre, `testDebugUnitTest assembleDebug` a reussi avec **53 tests,
+0 echec, 0 erreur**, apres les corrections du role et le premier chemin de
+demande sortante native.
 
-Build: OK (`testDebugUnitTest assembleDebug`)
+Les gardes de session, le timeout, le filtrage du pair entrant et les quatre
+tests `NativeServiceNegotiationTest` ont ete ajoutes ensuite. **Leur compilation
+et leur execution finale restent a faire**: trois tentatives d'execution ont
+ete refusees par le mecanisme d'autorisation de l'environnement, avec
+`Selected model is at capacity`. Ce n'est pas une erreur Gradle diagnostiquee.
 
-Tests unitaires: OK, dont la sequence PD -> CAPEX Sync et les codecs SAP.
+Au dernier controle du 14 septembre, `adb devices -l` ne listait aucun appareil.
+La nouvelle version n'a donc pas ete installee ni testee sur la camera.
 
-Android lint: OK (0 erreur bloquante)
+Les anciens APK du dossier ne constituent PAS une livraison finale de ces
+sources. L'archive source de cette reprise est explicitement non validee.
 
-APK debug: `app/build/outputs/apk/debug/app-debug.apk`
+## Etat par couche
 
-La capture physique de reference du 2026-09-03 utilisait `SM_G950F` / `dreamlte` / `/e/OS`.
+| Couche | Implementation / validation |
+| --- | --- |
+| RFCOMM | Echanges reels observes sur A05; nouvelle garde d'adresse a retester |
+| Framing et CRC | Frames reelles CAPEX decodees et reponses acceptees |
+| WSM | Confirmation reelle observee, depend de binaires Samsung embarques |
+| CAPEX | Service accepte et requetes recues; nouvelle requete Sync a retester |
+| SAP controle | Demande sortante codee; acceptation camera non observee |
+| Canal 204 | Non valide physiquement |
+| Gear360 JSON | Code existant preserve; aucun RX 204 valide observe |
+| PHOTO / VIDEO | Non valides; boutons non forces |
+| Wi-Fi automatique | Reste desactive pour le diagnostic controle |
+| UPnP / galerie / RVF | Non traites dans cette reprise |
 
-Le telephone de test actuel est un Galaxy A05 `SM-A055F`, Android 15/API 35. Lors de la derniere session ADB valide, `com.samsung.accessory` version `3.1.93.90325` etait installe avec les permissions framework/Bluetooth requises. Le telephone n'etait plus visible dans `adb devices` au moment de la build du 2026-09-09; la nouvelle APK n'a donc pas encore ete reinstallee ni validee physiquement.
+## Dependances et limites restantes
 
-Installation APK debug: OK.
+Les JAR de `app/sdk` sont des clients, pas le framework `com.samsung.accessory`.
+Le backend legacy exige ce package separement installe. Son installation
+existante sur l'A05 etait 3.1.93.90325; elle ne prouve pas une session de controle.
 
-Samsung Accessory Service sur le S8: present, version `3.1.96.61111 / 319661111`.
+Le backend natif utilise encore `libwsm2`/JNI Samsung, presents pour ARM64.
+Il ne constitue donc pas une reimplementation independante et universelle.
+L'identite Bluetooth locale necessaire a WSM a ete fournie explicitement lors
+des essais ADB; sa disponibilite automatique depend d'Android et du constructeur.
 
-Permissions corrigees pour le test ADB:
+Les probes TrustZone et leurs bibliotheques de diagnostic deja presents dans
+le depot ne font pas partie du chemin ayant reussi WSM. Aucun firmware camera,
+formatage, suppression de media ou reset du telephone n'a ete effectue.
 
-- `io.github.teccheck.gear360app`: `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `NEARBY_WIFI_DEVICES`.
-- `com.samsung.accessory`: `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`.
+## Reprendre le test
 
-Logcat valide:
+Depuis la racine Gradle:
 
-```text
-G360-BT: BLE scan started
-G360-BT: Classic discovery start requested result=true
-G360-BT: Classic Bluetooth discovery started
-G360-CONNECTION: Samsung framework status=PRESENT FRAMEWORK_BT_CONNECT=GRANTED version=3.1.96.61111 / 319661111
-G360-CONNECTION: Control backend selected: SAMSUNG LEGACY
-LEGACY-SAM: framework package present YES ... permission=APP_ACCESSORY=GRANTED FRAMEWORK_BT_CONNECT=GRANTED
-LEGACY-SAM: bind manager SUCCESS
-LEGACY-SAP: BTMProviderService created profile=name=G_360_APP id=/system/DI_360_2D channels=[204,222,230]
-LEGACY-SAP: SA agent available
-G360-BT: Classic Bluetooth discovery finished
+```powershell
+.\gradlew.bat clean testDebugUnitTest assembleDebug lintDebug
+.\diagnose-gear360.bat
 ```
 
-La Gear 360 n'etait pas visible pendant cette capture: `BluetoothAdapter.bondedDevices` ne contenait pas `Gear 360 (7F29)` et la decouverte Classic n'a pas remonte de device Gear. Aucun handshake SAP/canal 204 ne peut donc encore etre valide physiquement dans ce log.
+Brancher/deverrouiller le telephone, autoriser ADB, choisir `Connect to Android`
+sur la camera. Le script installe l'APK et conserve des logs dans `logs/`.
+Les logs complets peuvent contenir des donnees personnelles; ne pas les publier
+automatiquement dans Git.
 
-## Statut par couche
+La prochaine preuve requise est une reponse d'acceptation du service Gear360,
+puis `CHANNEL 204 OPEN`, RX JSON et `config-info`. Seulement ensuite tester
+une photo et une courte video suivie de STOP. Ne pas confondre `SAP READY`
+(transport) avec la disponibilite camera confirmee par `config-info`.
 
-Bluetooth discovery: OK logiciel et ADB. BLE + Classic sont lances; la selection filtre les noms Gear 360. Validation camera necessaire.
+## Fichiers modifies dans la reprise du 14 septembre
 
-Samsung Legacy framework: OK logiciel. Package et binder verifies sur le S8; package `3.1.93.90325` verifie sur le Galaxy A05. La nouvelle chaine complete reste a revalider avec la camera en mode `Connect to Android`.
+- `transport/nativegear360/Gear360ClassicBluetoothServerLink.kt`
+- `transport/nativegear360/NativeGear360Transport.kt`
+- `transport/nativegear360/sap/NativeSapSession.kt`
+- `transport/nativegear360/sap/SapCapabilityExchange.kt`
+- `transport/nativegear360/sap/SapCapabilityResponse.kt` (nouveau)
+- `transport/nativegear360/sap/SapChannelMux.kt`
+- Tests: `SapFrameEncoderTest.kt`, `SapCapabilityResponseTest.kt`,
+  `NativeServiceNegotiationTest.kt`
+- Documentation: `DIAGNOSTIC.md`, `PROTOCOL.md`, `THIRD_PARTY_NOTICES.md`,
+  `docs/protocol/a05-control-20260911.md`
 
-RFCOMM: PARTIEL, code client + serveur compile. Validation physique SM-R210 necessaire.
-
-Framing SAP: OK logiciel pour longueur, header SAP, fragmentation basique, profile-id fixe 17 octets et CRC transport.
-
-CRC: OK logiciel, test vector `123456789` -> `0xbb3d`.
-
-SAP session: PARTIEL. CAPEX legacy structure Samsung et service connection Gear360 sont implementes; le CAPEX moderne reste bloque volontairement avec erreur explicite.
-
-CAPEX: PARTIEL. Legacy implemente avec record `/system/DI_360_2D`. Normal CAPEX a analyser depuis trace HCI/JADX avant reponse.
-
-Channel 204: PARTIEL. Le mux l'ouvre seulement si la camera envoie une service connection contenant 204.
-
-Gear360 JSON: PRESERVE. Les messages existants sont reutilises apres decapsulation channel 204.
-
-PHOTO: NON VALIDE physiquement. Le bouton restera inactif jusqu'a `config-info`.
-
-VIDEO: NON VALIDE physiquement. Meme condition que PHOTO.
-
-Wi-Fi: DESACTIVE pour ce diagnostic controle.
-
-UPnP/Gallery/RVF: NON TRAITE dans cette iteration.
-
-## Logs attendus au test physique
-
-Filtre conseille:
-
-```text
-Gear360|G360|AndroidRuntime|FATAL|Bluetooth|RFCOMM|SAP
-```
-
-Sequence recherchee:
-
-```text
-G360-RFCOMM: RFCOMM-SERVER CLASSIC_LISTENING ...
-G360-RFCOMM: RFCOMM-CLIENT CLASSIC_CONNECTING ...
-G360-RFCOMM: ... CLASSIC_CONNECTED
-G360-SAP: phase=PROTOCOL_INIT
-G360-SAP-FRAME: RX session=1020 ...
-G360-SAP: legacy CAPEX query ...
-G360-SAP: legacy CAPEX response sent profile=/system/DI_360_2D
-G360-SAP-FRAME: RX session=1023 ...
-G360-SAP: service request profile=/system/DI_360_2D ... channels=204->...
-G360-SAP: SAP READY: channel 204 open
-G360-CH204: CHANNEL 204 OPEN
-G360-CH204: RX 204 len=...
-G360-PROTOCOL: RX ch=204 ...
-G360-CONNECTION: READY config-info received
-```
-
-## Premier point d'echec restant a identifier
-
-Il faut tester la nouvelle APK avec la vraie SM-R210 allumee en mode `Connect to Android` pendant que l'ecran de scan est ouvert.
-
-Si `G360-BT: Gear 360 discovered via classic: Gear 360 (...)` n'apparait pas, le blocage est au niveau visibilite/pairing Bluetooth Android.
-
-Si la camera apparait et que l'ecran simple s'ouvre, le prochain point a observer est:
-
-```text
-LEGACY-SAM: Accessory connected
-LEGACY-SAP: PEER_AGENT_FOUND; requesting service connection as the original Gear 360 Manager does
-LEGACY-SAP: OUTGOING SERVICE CONNECTION REQUEST
-LEGACY-SAP: INCOMING SERVICE CONNECTION REQUEST
-LEGACY-SAP: acceptServiceConnectionRequest
-LEGACY-SAP: SASocket connected
-LEGACY-RX/G360-CH204: RX channel=204
-```
-
-Si aucun `RX_RAW` n'arrive, le blocage est RFCOMM/role/UUID.
-
-Si `Unknown SAP framing` apparait, le prefixe/framing bas niveau doit etre ajuste a partir de la trace HCI.
-
-Si `normal CAPEX query received` apparait, il faut completer le format CAPEX moderne.
-
-Si le canal 204 ouvre mais aucun JSON n'arrive, le handshake/service connection reste incomplet.
+Les chemins Kotlin commencent sous
+`app/src/main/java/io/github/teccheck/gear360app/`; les tests sous `app/src/test/java/`.
+Aucun push Git effectue pendant cette reprise.

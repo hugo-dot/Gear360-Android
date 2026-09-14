@@ -18,6 +18,7 @@ import io.github.teccheck.gear360app.utils.DeviceDescription
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.UUID
 
@@ -46,8 +47,13 @@ class NativeGear360Transport(
     @Volatile private var reconnectAttempt = 0
     @Volatile private var reconnectDevice: BluetoothDevice? = null
     @Volatile private var reconnectControlUuid: UUID? = null
+    private var handshakeTimeout: ScheduledFuture<*>? = null
+    @Volatile private var stopping = false
 
     override fun connect(device: DeviceDescription) {
+        // A retry must release the previous listeners and socket before advertising again.
+        disconnect(null)
+        stopping = false
         listener.onBackendSelected("NATIVE")
 
         if (!AndroidPermissionUtils.hasBluetoothConnectPermission(appContext)) {
@@ -73,11 +79,20 @@ class NativeGear360Transport(
         }
 
         worker.execute {
+            if (stopping) return@execute
             decoder.reset()
             activeSource = null
             activeWriter = null
             reconnectAttempt = 0
             sapSession = createSapSession(device)
+            val attemptSession = sapSession
+            handshakeTimeout = reconnectScheduler.schedule({
+                if (!stopping && attemptSession === sapSession) {
+                    attemptSession?.onHandshakeTimeout(
+                        "Bluetooth control connection timed out; select Connect to Android on the camera and retry"
+                    )
+                }
+            }, 60, TimeUnit.SECONDS)
 
             val summary = NativeBluetoothDiagnostics.describe(appContext, bluetoothDevice)
             Log.i(TAG_PHYSICAL, summary)
@@ -86,9 +101,10 @@ class NativeGear360Transport(
 
             // The Samsung framework advertises both inbound UUIDs continuously. The camera may
             // call back while SDP is still being refreshed, so publish our listeners first.
-            startRfcommServer()
+            startRfcommServer(device.address)
 
             val uuids = Gear360SdpDiscovery(appContext).discover(bluetoothDevice)
+            if (stopping || attemptSession !== sapSession) return@execute
             listener.onNativeBluetoothDiagnostics("SDP UUIDs=${uuids.toDisplayString()}")
 
             val controlUuid = Gear360SdpDiscovery.selectControlUuid(uuids)
@@ -125,9 +141,12 @@ class NativeGear360Transport(
     }
 
     override fun disconnect(device: DeviceDescription?) {
-        clientLink?.disconnect()
+        stopping = true
+        handshakeTimeout?.cancel(false)
+        handshakeTimeout = null
+        clientLink?.release()
         clientLink = null
-        serverLink?.disconnect()
+        serverLink?.release()
         serverLink = null
         sapSession?.close()
         sapSession = null
@@ -159,6 +178,9 @@ class NativeGear360Transport(
     }
 
     override fun release() {
+        stopping = true
+        handshakeTimeout?.cancel(false)
+        handshakeTimeout = null
         clientLink?.release()
         clientLink = null
         serverLink?.release()
@@ -170,7 +192,7 @@ class NativeGear360Transport(
         worker.shutdownNow()
     }
 
-    private fun startRfcommServer() {
+    private fun startRfcommServer(expectedAddress: String) {
         val listenUuids = listOf(
             Gear360SdpDiscovery.GEAR360_SAP_UUID_PRIMARY,
             Gear360SdpDiscovery.GEAR360_SAP_UUID_SECONDARY
@@ -192,7 +214,7 @@ class NativeGear360Transport(
             }
         )
         serverLink = server
-        server.listen(listenUuids)
+        server.listen(listenUuids, expectedAddress)
     }
 
     private fun createSapSession(device: DeviceDescription): NativeSapSession {
@@ -256,6 +278,8 @@ class NativeGear360Transport(
                 }
 
                 override fun onChannel204Open() {
+                    handshakeTimeout?.cancel(false)
+                    handshakeTimeout = null
                     Log.i(TAG_CH204, "CHANNEL 204 OPEN")
                     listener.onSapSocketConnected("Gear 360 native", device.address, "channel 204")
                 }
@@ -271,6 +295,7 @@ class NativeGear360Transport(
 
                 override fun onProtocolError(message: String) {
                     Log.e(TAG_SAP, message)
+                    disconnect(null)
                     listener.onSapConnectionFailed(NATIVE_SAP_NEGOTIATION_FAILED, message)
                 }
             }
@@ -278,6 +303,7 @@ class NativeGear360Transport(
     }
 
     private fun handleClassicState(source: String, state: ClassicLinkState, detail: String) {
+        if (stopping) return
         Log.i(TAG_RFCOMM, "$source $state $detail")
         listener.onPhysicalTransportState(state.name)
         listener.onNativeBluetoothDiagnostics("$source $state $detail")
@@ -286,7 +312,12 @@ class NativeGear360Transport(
             ClassicLinkState.CLASSIC_CONNECTING -> Unit
             ClassicLinkState.CLASSIC_CONNECTED -> {
                 if (activateWriter(source)) {
-                    sapSession?.onRfcommConnected()
+                    val session = sapSession
+                    session?.onRfcommConnected()
+                    handshakeTimeout?.cancel(false)
+                    handshakeTimeout = reconnectScheduler.schedule({
+                        if (!stopping && session === sapSession) session?.onHandshakeTimeout()
+                    }, 30, TimeUnit.SECONDS)
                 }
             }
             ClassicLinkState.SAP_NEGOTIATING -> {
@@ -298,6 +329,7 @@ class NativeGear360Transport(
 
     @Synchronized
     private fun handleClassicRx(source: String, data: ByteArray) {
+        if (stopping) return
         if (source != activeSource) {
             Log.w(TAG_SAP_FRAME, "Ignoring bytes from inactive RFCOMM link=$source")
             return
@@ -339,6 +371,7 @@ class NativeGear360Transport(
 
     private fun handleClassicClosed(source: String, reason: String, error: Throwable?) {
         Log.w(TAG_RFCOMM, "$source CLOSED reason=$reason", error)
+        if (stopping) return
         val active = activeSource
         val waitingForOtherSide = active == null &&
             ((source == LINK_CLIENT && serverLink?.isRunning() == true) || source == LINK_SERVER)
@@ -355,10 +388,14 @@ class NativeGear360Transport(
             return
         }
 
+        handshakeTimeout?.cancel(false)
+        handshakeTimeout = null
+        sapSession?.close()
+        activeWriter = null
         listener.onPhysicalTransportState("DISCONNECTED")
         listener.onSapConnectionFailed(
             NATIVE_SAP_NOT_READY,
-            "Native RFCOMM closed before SAP/channel 204: $reason"
+            "Native control connection lost: $reason"
         )
     }
 
@@ -382,10 +419,11 @@ class NativeGear360Transport(
     }
 
     private fun scheduleClientReconnect() {
+        if (stopping) return
         val attempt = reconnectAttempt + 1
         if (attempt > MAX_RFCOMM_RECONNECT_ATTEMPTS || reconnectScheduler.isShutdown) {
-            listener.onNativeBluetoothDiagnostics(
-                "RFCOMM retry limit reached; select Connect to Android and press Connect again"
+            sapSession?.onHandshakeTimeout(
+                "RFCOMM retry limit reached; select Connect to Android on the camera and press Connect again"
             )
             return
         }
@@ -394,7 +432,7 @@ class NativeGear360Transport(
             "RFCOMM retry $attempt/$MAX_RFCOMM_RECONNECT_ATTEMPTS in ${RFCOMM_RECONNECT_DELAY_SECONDS}s"
         )
         reconnectScheduler.schedule({
-            if (activeSource != null || serverLink?.isRunning() != true) return@schedule
+            if (stopping || activeSource != null || serverLink?.isRunning() != true) return@schedule
             val selected = reconnectDevice ?: return@schedule
             val uuid = reconnectControlUuid ?: return@schedule
             Log.i(TAG_RFCOMM, "retrying outbound RFCOMM attempt=$attempt uuid=$uuid")

@@ -69,14 +69,23 @@ class SapFrameEncoderTest {
 
         assertArrayEquals(
             byteArrayOf(
-                0x00, 0x17, 0x0f, 0xf0.toByte(),
+                0x00, 0x1b, 0x0f, 0xf0.toByte(),
                 0x01, 0x03,
+                0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
                 0x01,
                 0x2f, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x2f,
                 0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32, 0x44,
                 0x3b
             ),
             encoded
+        )
+    }
+
+    @Test
+    fun capexSyncPreservesChecksumAndEmptyFilterCount() {
+        assertArrayEquals(
+            byteArrayOf(1, 3, 0x12, 0x34, 0x56, 0x78, 0),
+            SapCapabilityExchange.composeSyncQuery(emptyList(), checksum = 0x12345678)
         )
     }
 
@@ -98,7 +107,7 @@ class SapFrameEncoderTest {
                 0x44, 0x49, 0x5f, 0x33, 0x36, 0x30, 0x5f, 0x32, 0x44,
                 0x3b,
                 0x01, 0x00,
-                0x01,
+                0x00,
                 0x00, 0x0a
             ),
             response
